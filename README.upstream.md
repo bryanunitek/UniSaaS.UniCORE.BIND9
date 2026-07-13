@@ -89,10 +89,10 @@ ISC maintains a public git repository for BIND; details can be found
 at [https://www.isc.org/sourceaccess/](https://www.isc.org/sourceaccess/).
 
 Information for BIND contributors can be found in the following files:
-- General information: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- BIND 9 code style: [doc/dev/style.md](doc/dev/style.md)
-- BIND architecture and developer guide: [doc/dev/dev.md](doc/dev/dev.md)
+- General information: [CONTRIBUTING.md](https://git.unitek-systems.com/UniCORE/UniSaaS.UniCORE.BIND9/src/branch/main/CONTRIBUTING.md) (mirror: [GitHub](https://github.com/bryanunitek/UniSaaS.UniCORE.BIND9/blob/main/CONTRIBUTING.md))
+- Code of Conduct: [CODE_OF_CONDUCT.md](https://git.unitek-systems.com/UniCORE/UniSaaS.UniCORE.BIND9/src/branch/main/CODE_OF_CONDUCT.md) (mirror: [GitHub](https://github.com/bryanunitek/UniSaaS.UniCORE.BIND9/blob/main/CODE_OF_CONDUCT.md))
+- BIND 9 code style: [doc/dev/style.md](https://git.unitek-systems.com/UniCORE/UniSaaS.UniCORE.BIND9/src/branch/main/doc/dev/style.md) (mirror: [GitHub](https://github.com/bryanunitek/UniSaaS.UniCORE.BIND9/blob/main/doc/dev/style.md))
+- BIND architecture and developer guide: [doc/dev/dev.md](https://git.unitek-systems.com/UniCORE/UniSaaS.UniCORE.BIND9/src/branch/main/doc/dev/dev.md) (mirror: [GitHub](https://github.com/bryanunitek/UniSaaS.UniCORE.BIND9/blob/main/doc/dev/dev.md))
 
 Patches for BIND may be submitted as
 [merge requests](https://gitlab.isc.org/isc-projects/bind9/merge_requests)

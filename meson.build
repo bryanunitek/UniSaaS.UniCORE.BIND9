@@ -12,7 +12,7 @@
 project(
     'bind',
     ['c'],
-    version: '9.21.22',
+    version: '9.21.24',
     meson_version: '>=1.3.0',
     license: 'MPL-2.0',
     default_options: {
@@ -273,13 +273,12 @@ env = environment(
 )
 
 # Meson defines these variables in unit tests when not set
-test_env = environment(
-    {
-        'ASAN_OPTIONS': asan_options,
-        'TSAN_OPTIONS': tsan_options,
-        'UBSAN_OPTIONS': ubsan_options,
-    },
-)
+test_env_vars = {
+    'ASAN_OPTIONS': asan_options,
+    'TSAN_OPTIONS': tsan_options,
+    'UBSAN_OPTIONS': ubsan_options,
+}
+test_env = environment(test_env_vars)
 
 ### Configuration
 config = configuration_data()
@@ -330,6 +329,7 @@ if not cc.compiles(constexpr_test, name: 'usage of constexpr')
 endif
 
 if developer_mode
+    config.set('DEVELOPER_MODE', 1)
     config.set('ISC_LIST_CHECKINIT', 1)
     config.set('ISC_MEM_TRACKLINES', 1)
     config.set('ISC_MUTEX_ERROR_CHECK', 1)
@@ -386,7 +386,7 @@ else
     cc.has_function('__builtin_popcountll', required: true)
 endif
 
-foreach attr : ['malloc', 'returns_nonnull']
+foreach attr : ['malloc', 'returns_nonnull', 'warn_unused_result']
     if cc.has_function_attribute(attr)
         config.set('HAVE_FUNC_ATTRIBUTE_@0@'.format(attr.to_upper()), 1)
     endif
@@ -460,7 +460,7 @@ if cpu_family in ['arm', 'aarch64']
         instruction_test.format('yield'),
         name: 'usage of yield instruction',
     )
-        config.set('HAVE_SPARC_PAUSE', 1)
+        config.set('HAVE_ARM_YIELD', 1)
     endif
 elif cpu_family in ['sparc', 'sparc64']
     if cc.compiles(
@@ -725,8 +725,18 @@ endif
 # not add it automatically - we need to add it explicitly in such case.
 
 if urcu_dep[1].version().version_compare('<0.13.0')
-    urcu_dep += cc.find_library('liburcu-common')
+    urcu_dep += cc.find_library('urcu-common')
 endif
+
+foreach h : [
+    'urcu/uatomic.h',
+    'urcu/assert.h',
+    'urcu/pointer.h',
+]
+    if cc.has_header(h, dependencies: urcu_dep)
+        config.set('HAVE_@0@'.format(h.underscorify().to_upper()), 1)
+    endif
+endforeach
 
 config.set_quoted('RCU_FLAVOR', f'liburcu-@rcu_flavor@')
 config.set_quoted('RCU_VERSION', urcu_dep[0].version())
@@ -945,7 +955,7 @@ dtrace_header = generator(
     arguments: ['-s', '@INPUT@', '-h', '-o', '@OUTPUT@'],
 )
 
-# Acutally, dtrace probes are still built with macOS.
+# Actually, dtrace probes are still built with macOS.
 # macOS flavored dtrace doesn't recognize the -G option and
 # only uses headers.
 #
@@ -953,8 +963,7 @@ dtrace_header = generator(
 # to be able to disable it. You can just not use the probes.
 config.set(
     'HAVE_DTRACE',
-    dtrace.full_path() != dtrace_shim
-    and build_machine.system() != 'darwin',
+    dtrace.full_path() != dtrace_shim and host_machine.system() != 'darwin',
 )
 cc.has_header('sys/sdt.h', required: tracing_opt)
 assert(
@@ -1872,6 +1881,13 @@ subdir('doc')
 subdir('tests')
 
 foreach name, sources : fuzz_binaries
+    # Only fuzz_dns_qp uses the qp test helpers; give it just those sources
+    # rather than the whole libbindtest library (see libtest_qp_dep).
+    fuzz_deps = [libdns_dep, libisc_dep]
+    if name == 'fuzz_dns_qp'
+        fuzz_deps += libtest_qp_dep
+    endif
+
     fuzz_bin = executable(
         name,
         sources,
@@ -1879,13 +1895,10 @@ foreach name, sources : fuzz_binaries
         implicit_include_directories: true,
         install: false,
         c_args: ['-Wno-vla'],
+        include_directories: test_inc,
         link_args: fuzz_link_args,
         sources: default_sanitize_options,
-        dependencies: [
-            libdns_dep,
-            libisc_dep,
-            libtest_dep,
-        ],
+        dependencies: fuzz_deps,
     )
 
     test(
@@ -1978,8 +1991,8 @@ if doc_opt.allowed()
 
         rst_epilog = f'''.. |rndc_conf| replace:: ``@sysconfdir@/rndc.conf``
 .. |rndc_key| replace:: ``@sysconfdir@/rndc.key``
-.. |named_conf| replace:: ``@sysconfdir@/named.key``
-.. |named_pid| replace:: ``@runstatedir@/named.key``
+.. |named_conf| replace:: ``@sysconfdir@/named.conf``
+.. |named_pid| replace:: ``@runstatedir@/named.pid``
 .. |session_key| replace:: ``@runstatedir@/session.key``
 '''
 

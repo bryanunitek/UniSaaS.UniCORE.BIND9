@@ -166,7 +166,6 @@ geoip2_database(const dns_geoip_databases_t *geoip,
 	case dns_geoip_city_name:
 	case dns_geoip_city_postalcode:
 	case dns_geoip_city_timezonecode:
-	case dns_geoip_city_metrocode:
 	case dns_geoip_city_areacode:
 		return geoip->city;
 
@@ -194,7 +193,7 @@ match_string(MMDB_entry_data_s *value, const char *str) {
 
 	if (value == NULL || !value->has_data ||
 	    value->type != MMDB_DATA_TYPE_UTF8_STRING ||
-	    value->utf8_string == NULL)
+	    value->utf8_string == NULL || value->data_size != strlen(str))
 	{
 		return false;
 	}
@@ -314,14 +313,6 @@ dns_geoip_match(const isc_netaddr_t *reqaddr,
 	case dns_geoip_city_timezonecode:
 		ret = MMDB_get_value(&state->entry, &value, "location",
 				     "time_zone", (char *)0);
-		if (ret == MMDB_SUCCESS) {
-			return match_string(&value, elt->as_string);
-		}
-		break;
-
-	case dns_geoip_city_metrocode:
-		ret = MMDB_get_value(&state->entry, &value, "location",
-				     "metro_code", (char *)0);
 		if (ret == MMDB_SUCCESS) {
 			return match_string(&value, elt->as_string);
 		}

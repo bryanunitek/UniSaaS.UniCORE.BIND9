@@ -69,17 +69,20 @@
 #include <dns/rdataclass.h>
 #include <dns/rdatalist.h>
 #include <dns/rdataset.h>
+#include <dns/rdatasetiter.h>
 #include <dns/rdatastruct.h>
 #include <dns/rdatatype.h>
 #include <dns/resolver.h>
 #include <dns/rootns.h>
 #include <dns/stats.h>
 #include <dns/tsig.h>
+#include <dns/types.h>
 #include <dns/validator.h>
+#include <dns/view.h>
 #include <dns/zone.h>
 #include <dns/zoneproperties.h>
 
-#include "dns/view.h"
+#include "probes-dns.h"
 
 #ifdef WANT_QUERYTRACE
 #define RTRACE(m)                                                       \
@@ -230,6 +233,13 @@
 #ifndef DEFAULT_MAX_QUERIES
 #define DEFAULT_MAX_QUERIES 50
 #endif /* ifndef DEFAULT_MAX_QUERIES */
+
+/*
+ * Cap on the number of glue addresses cached per NS owner in a referral
+ * delegation set.  The resolver itself will only ever try a handful of
+ * addresses per NS, so accepting more from a referral is wasted memory.
+ */
+#define DELEG_MAX_GLUES_PER_NS 20
 
 /* Hash table for zone counters */
 #ifndef RES_DOMAIN_HASH_BITS
@@ -928,7 +938,7 @@ typedef struct respctx {
 				 * fctx_query() when resending */
 
 	dns_rdatatype_t type; /* type being sought (set to
-			       * ANY if qtype was SIG or RRSIG) */
+			       * ANY if qtype was RRSIG) */
 	bool aa;	      /* authoritative answer? */
 	dns_trust_t trust;    /* answer trust level */
 	bool chaining;	      /* CNAME/DNAME processing? */
@@ -971,7 +981,6 @@ typedef struct respctx {
 	dns_rdataset_t *ns_rdataset; /* NS rdataset */
 
 	dns_name_t *soa_name; /* SOA name in a negative answer */
-	dns_name_t *ds_name;  /* DS name in a negative answer */
 
 	dns_name_t *found_name;	    /* invalid name in negative
 				     * response */
@@ -1074,7 +1083,7 @@ rctx_dispfail(respctx_t *rctx);
 static isc_result_t
 rctx_timedout(respctx_t *rctx);
 
-static void
+static isc_result_t
 rctx_ncache(respctx_t *rctx);
 
 /*%
@@ -1101,9 +1110,6 @@ set_stats(dns_resolver_t *res, isc_statscounter_t counter, uint64_t val) {
 	}
 }
 
-static bool
-waiting_for_fetch(fetchctx_t *fctx, const dns_name_t *name,
-		  dns_rdatatype_t type, const dns_name_t *domain);
 static void
 valcreate(fetchctx_t *fctx, dns_message_t *message, dns_adbaddrinfo_t *addrinfo,
 	  dns_name_t *name, dns_rdatatype_t type, dns_rdataset_t *rdataset,
@@ -2016,7 +2022,7 @@ fctx_setretryinterval(fetchctx_t *fctx, unsigned int rtt) {
 	}
 
 	/*
-	 * But don't wait past the the final expiration of the fetch,
+	 * But don't wait past the final expiration of the fetch,
 	 * or for more than 10 seconds total.
 	 */
 	if (us > limit) {
@@ -2034,6 +2040,9 @@ fctx_setretryinterval(fetchctx_t *fctx, unsigned int rtt) {
 	isc_interval_set(&fctx->interval, seconds, us * NS_PER_US);
 }
 
+static struct tried *
+triededns(fetchctx_t *fctx, isc_sockaddr_t *address);
+
 static isc_result_t
 fctx_query(fetchctx_t *fctx, dns_adbaddrinfo_t *addrinfo,
 	   unsigned int options) {
@@ -2047,6 +2056,13 @@ fctx_query(fetchctx_t *fctx, dns_adbaddrinfo_t *addrinfo,
 	isc_tlsctx_cache_t *tlsctx_cache = NULL;
 
 	FCTXTRACE("query");
+
+	if (LIBDNS_RESOLVER_QUERY_ENABLED()) {
+		char addrstr[ISC_SOCKADDR_FORMATSIZE];
+		isc_sockaddr_format(&addrinfo->sockaddr, addrstr,
+				    sizeof(addrstr));
+		LIBDNS_RESOLVER_QUERY(fctx, addrstr, addrinfo->srtt);
+	}
 
 	res = fctx->res;
 
@@ -2124,6 +2140,23 @@ fctx_query(fetchctx_t *fctx, dns_adbaddrinfo_t *addrinfo,
 			if (result == ISC_R_SUCCESS && usetcp) {
 				options |= DNS_FETCHOPT_TCP;
 			}
+		}
+	}
+
+	/*
+	 * If this server has already been tried at least twice in this
+	 * fetch context after the previous attempt timed out, force TCP
+	 * for this attempt.  The decision must be made here, before the
+	 * dispatch type is chosen below, so that the dispatch and the
+	 * DNS_FETCHOPT_TCP flag agree.
+	 */
+	if (fctx->timeout && fctx->timeouts >= 2U &&
+	    (options & DNS_FETCHOPT_NOEDNS0) == 0 &&
+	    (options & DNS_FETCHOPT_TCP) == 0)
+	{
+		struct tried *tried = triededns(fctx, &sockaddr);
+		if (tried != NULL && tried->count >= 2U) {
+			options |= DNS_FETCHOPT_TCP;
 		}
 	}
 
@@ -2500,11 +2533,31 @@ resquery_send(resquery_t *query) {
 	} else if ((query->options & DNS_FETCHOPT_NOVALIDATE) != 0 ||
 		   (query->options & DNS_FETCHOPT_TRYCD) != 0)
 	{
+		/*
+		 * `DNS_FETCHOPT_TRYCD` has been set by the code processing a
+		 * SERVFAIL response from a forwarder with CD=0. This is a
+		 * second (and last) attempt to resend the query with CD=1 to
+		 * the same server.
+		 */
 		fctx->qmessage->flags |= DNS_MESSAGEFLAG_CD;
 	} else if (res->view->enablevalidation &&
 		   ((fctx->qmessage->flags & DNS_MESSAGEFLAG_RD) != 0))
 	{
-		query->options |= DNS_FETCHOPT_TRYCD;
+		/*
+		 * RD flag is set, meaning either that the client requests
+		 * recursion or (non exclusive) we are asking a forwarder. The
+		 * logic about CD doesn't matter in the non-forwarder case, but
+		 * doesn't harm either (as an authoritative server will ignore
+		 * this). However, for the forwarder case, it means the
+		 * forwarder will attempt the validation.
+		 *
+		 * The query is sent with CD=0, and `DNS_FETCHOPT_TRYNOCD`
+		 * enables the code processing the response to know (if this is
+		 * a forwarder, which is re-checked in the code processing the
+		 * response) that we can re-send the query again, one more time,
+		 * with CD=1 (leaving the resolver doing the validation itself).
+		 */
+		query->options |= DNS_FETCHOPT_TRYNOCD;
 	}
 
 	/*
@@ -2552,35 +2605,20 @@ resquery_send(resquery_t *query) {
 		query->options |= DNS_FETCHOPT_NOEDNS0;
 	}
 
-	if (fctx->timeout && (query->options & DNS_FETCHOPT_NOEDNS0) == 0) {
+	if (fctx->timeout && (query->options & DNS_FETCHOPT_NOEDNS0) == 0 &&
+	    (query->options & DNS_FETCHOPT_TCP) == 0)
+	{
 		isc_sockaddr_t *sockaddr = &query->addrinfo->sockaddr;
-		struct tried *tried;
+		struct tried *tried = triededns(fctx, sockaddr);
 
 		/*
 		 * If this is the first timeout for this server in this
 		 * fetch context, try setting EDNS UDP buffer size to
 		 * the largest UDP response size we have seen from this
 		 * server so far.
-		 *
-		 * If this server has already timed out twice or more in
-		 * this fetch context, force TCP.
 		 */
-		if ((tried = triededns(fctx, sockaddr)) != NULL) {
-			if (tried->count == 1U) {
-				hint = dns_adb_getudpsize(fctx->adb,
-							  query->addrinfo);
-			} else if (tried->count >= 2U) {
-				if ((query->options & DNS_FETCHOPT_TCP) == 0) {
-					/*
-					 * Inform the ADB that we're ending a
-					 * UDP fetch, and turn the query into
-					 * a TCP query.
-					 */
-					dns_adb_endudpfetch(fctx->adb,
-							    query->addrinfo);
-					query->options |= DNS_FETCHOPT_TCP;
-				}
-			}
+		if (tried != NULL && tried->count == 1U) {
+			hint = dns_adb_getudpsize(fctx->adb, query->addrinfo);
 		}
 	}
 	fctx->timeout = false;
@@ -3279,7 +3317,7 @@ add_bad(fetchctx_t *fctx, dns_message_t *rmessage, dns_adbaddrinfo_t *addrinfo,
  *
  * Since there's a good chance the server is broken and won't answer either
  * query, and since an ADB find with two pending fetches is a very rare
- * occurrance anyway, we regard this theoretical SERVFAIL as the lesser
+ * occurrence anyway, we regard this theoretical SERVFAIL as the lesser
  * evil.
  */
 static bool
@@ -4341,6 +4379,8 @@ fctx_try(fetchctx_t *fctx, bool retrying) {
 			FCTX_ATTR_SET(fctx, FCTX_ATTR_ADDRWAIT);
 			return;
 		default:
+			dns_ede_add(&fctx->edectx, DNS_EDE_NOREACHABLEAUTH,
+				    NULL);
 			goto done;
 		}
 
@@ -4358,6 +4398,8 @@ fctx_try(fetchctx_t *fctx, bool retrying) {
 		 */
 		if (addrinfo == NULL) {
 			result = DNS_R_SERVFAIL;
+			dns_ede_add(&fctx->edectx, DNS_EDE_NOREACHABLEAUTH,
+				    NULL);
 			goto done;
 		}
 	}
@@ -4549,15 +4591,13 @@ resume_qmin(void *arg) {
 		}
 
 		/*
-		 * We have got a CNAME or DNAME respone to the NS query
+		 * We have got a CNAME or DNAME response to the NS query
 		 * so we are done in almost all cases.
 		 */
 		if ((result == DNS_R_CNAME || result == DNS_R_DNAME) &&
 		    fctx->qmin_labels == dns_name_countlabels(fctx->name) &&
-		    fctx->type != dns_rdatatype_key &&
 		    fctx->type != dns_rdatatype_nsec &&
 		    fctx->type != dns_rdatatype_any &&
-		    fctx->type != dns_rdatatype_sig &&
 		    fctx->type != dns_rdatatype_rrsig)
 		{
 			pull_from_resp(resp, fctx);
@@ -5441,6 +5481,23 @@ has_000_label(dns_rdataset_t *nsecset) {
 	return false;
 }
 
+/*
+ * After a (non-error) negative-cache add, 'rdataset' is bound to whatever
+ * rdataset the cache authoritatively holds for the queried name and type.
+ * Map that to the result code the fetch should report:
+ *
+ *   - A negative cache entry (the one we just added, or a pre-existing one):
+ *     DNS_R_NCACHENXDOMAIN or DNS_R_NCACHENXRRSET, depending on NXDOMAIN vs
+ *     NODATA.
+ *
+ *   - A positive rdataset that was already cached at higher trust, which
+ *     caused our negative entry to be discarded (e.g. a CNAME or DNAME cached
+ *     by a concurrent query): ISC_R_SUCCESS, because that cached positive
+ *     answer is what gets returned.  Note the specific case for CNAME and
+ *     DNAME *if* the query type is not the same as the rdataset type. There
+ *     is a chain to follow *only* if the query type doesn't ask for the CNAME
+ *     or the DNAME.
+ */
 static void
 fctx_setresult(fetchctx_t *fctx) {
 	isc_result_t result = ISC_R_SUCCESS;
@@ -5485,6 +5542,99 @@ getrrsig(dns_name_t *name, dns_rdatatype_t type) {
 	}
 
 	return NULL;
+}
+
+static void
+delete_rrset(fetchctx_t *fctx, dns_name_t *name, dns_rdatatype_t type) {
+	isc_result_t result;
+	dns_dbnode_t *node = NULL;
+
+	result = dns_db_findnode(fctx->cache, name, false, &node);
+	if (result != ISC_R_SUCCESS) {
+		return;
+	}
+
+	dns_db_deleterdataset(fctx->cache, node, NULL, type, 0);
+	dns_db_deleterdataset(fctx->cache, node, NULL, dns_rdatatype_rrsig,
+			      type);
+	dns_db_detachnode(&node);
+}
+
+/*
+ * When caching a CNAME, evict other RRsets at the same owner name,
+ * according to the RFC specifications.
+ *
+ * RFC 1034, 3.6.2: Aliases and canonical names
+ *   If a CNAME RR is present at a node, no other data should be
+ *   present.
+ * RFC 2181, 10.1: CNAME resource records
+ *   An alias name (label of a CNAME record) may,
+ *   if DNSSEC is in use, have SIG, NXT, and KEY RRs, but may have no
+ *   other data.
+ * RFC 2535, 2.3.5: Special Considerations with CNAME
+ * RFC 4034, 3: The RRSIG Resource Record
+ *   Because every authoritative RRset in a zone must be protected by a
+ *   digital signature, RRSIG RRs must be present for names containing a
+ *   CNAME RR.  This is a change to the traditional DNS specification
+ *   [RFC1034], which stated that if a CNAME is present for a name, it is
+ *   the only type allowed at that name.
+ * RFC 4034, 4: The NSEC Resource Record
+ *   Because every authoritative name in a zone must be part of the NSEC
+ *   chain, NSEC RRs must be present for names containing a CNAME RR.
+ *   This is a change to the traditional DNS specification [RFC1034],
+ *   which stated that if a CNAME is present for a name, it is the only
+ *   type allowed at that name.
+ *
+ * So types allowed next to CNAME are: KEY, SIG, NXT, RRSIG, and NSEC.
+ */
+static void
+evict_cname_other(fetchctx_t *fctx, dns_name_t *name) {
+	isc_result_t result;
+	dns_dbnode_t *node = NULL;
+	dns_rdatasetiter_t *rdsiter = NULL;
+
+	result = dns_db_findnode(fctx->cache, name, false, &node);
+	if (result != ISC_R_SUCCESS) {
+		return;
+	}
+
+	result = dns_db_allrdatasets(fctx->cache, node, NULL, 0, 0, &rdsiter);
+	if (result != ISC_R_SUCCESS) {
+		dns_db_detachnode(&node);
+		return;
+	}
+
+	DNS_RDATASETITER_FOREACH(rdsiter) {
+		dns_rdataset_t rdataset = DNS_RDATASET_INIT;
+		dns_rdatasetiter_current(rdsiter, &rdataset);
+
+		if (NEGATIVE(&rdataset)) {
+			/* Keep all negative entries */
+			dns_rdataset_disassociate(&rdataset);
+			continue;
+		}
+
+		dns_typepair_t typepair = DNS_TYPEPAIR_VALUE(rdataset.type,
+							     rdataset.covers);
+		switch (typepair) {
+		/* NSEC records are allowed */
+		case DNS_TYPEPAIR(dns_rdatatype_nsec):
+		case DNS_SIGTYPEPAIR(dns_rdatatype_nsec):
+		/* Keep the CNAME and its signature */
+		case DNS_TYPEPAIR(dns_rdatatype_cname):
+		case DNS_SIGTYPEPAIR(dns_rdatatype_cname):
+			dns_rdataset_disassociate(&rdataset);
+			continue;
+		default:
+			/* Evict everything else */
+			dns_db_deleterdataset(fctx->cache, node, NULL,
+					      rdataset.type, rdataset.covers);
+			dns_rdataset_disassociate(&rdataset);
+		}
+	}
+
+	dns_rdatasetiter_destroy(&rdsiter);
+	dns_db_detachnode(&node);
 }
 
 static isc_result_t
@@ -5541,6 +5691,19 @@ cache_rrset(fetchctx_t *fctx, isc_stdtime_t now, dns_name_t *name,
 		result = dns_db_findnode(fctx->cache, name, true, &node);
 	}
 
+	/*
+	 * Evict CNAME records, according to the RFC rules (see
+	 * evict_cname_other).
+	 *
+	 * Note that a signature is tied to the type it covers and is deleted
+	 * along with the covered RRset in 'delete_rrset()'.
+	 */
+	if (!dns_rdataset_matchestype(rdataset, dns_rdatatype_cname) &&
+	    !dns_rdataset_matchestype(rdataset, dns_rdatatype_nsec))
+	{
+		delete_rrset(fctx, name, dns_rdatatype_cname);
+	}
+
 	if (result == ISC_R_SUCCESS) {
 		result = dns_db_addrdataset(fctx->cache, node, NULL, now,
 					    rdataset, options | equalok, added);
@@ -5577,26 +5740,42 @@ cache_rrset(fetchctx_t *fctx, isc_stdtime_t now, dns_name_t *name,
 	return result;
 }
 
-static void
-delete_rrset(fetchctx_t *fctx, dns_name_t *name, dns_rdatatype_t type) {
+static bool
+get_and_check_signer_name(dns_name_t *signer, dns_rdataset_t *sigrdataset) {
+	dns_rdata_rrsig_t rrsig;
 	isc_result_t result;
-	dns_dbnode_t *node = NULL;
+	dns_rdata_t rdata;
 
-	result = dns_db_findnode(fctx->cache, name, false, &node);
-	if (result != ISC_R_SUCCESS) {
-		return;
+	if (dns_rdataset_first(sigrdataset) != ISC_R_SUCCESS) {
+		return false;
 	}
 
-	dns_db_deleterdataset(fctx->cache, node, NULL, type, 0);
-	dns_db_deleterdataset(fctx->cache, node, NULL, dns_rdatatype_rrsig,
-			      type);
-	dns_db_detachnode(&node);
+	rdata = (dns_rdata_t)DNS_RDATA_INIT;
+	dns_rdataset_current(sigrdataset, &rdata);
+	result = dns_rdata_tostruct(&rdata, &rrsig, NULL);
+	INSIST(result == ISC_R_SUCCESS);
+	dns_name_copy(&rrsig.signer, signer);
+
+	while (dns_rdataset_next(sigrdataset) == ISC_R_SUCCESS) {
+		rdata = (dns_rdata_t)DNS_RDATA_INIT;
+		dns_rdataset_current(sigrdataset, &rdata);
+		result = dns_rdata_tostruct(&rdata, &rrsig, NULL);
+		INSIST(result == ISC_R_SUCCESS);
+
+		if (!dns_name_equal(signer, &rrsig.signer)) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static void
 fctx_cacheauthority(fetchctx_t *fctx, dns_message_t *message,
 		    isc_stdtime_t now) {
+	dns_fixedname_t fsigner;
 	isc_result_t result;
+	dns_name_t *signer;
 
 	/*
 	 * Cache any SOA/NS/NSEC records that happened to be validated.
@@ -5619,10 +5798,20 @@ fctx_cacheauthority(fetchctx_t *fctx, dns_message_t *message,
 			}
 
 			/*
-			 * Don't cache NSEC if missing NSEC or RRSIG types.
+			 * Don't cache if all the RRSIGs don't have the same
+			 * signer.
+			 */
+			signer = dns_fixedname_initname(&fsigner);
+			if (!get_and_check_signer_name(signer, sigrdataset)) {
+				continue;
+			}
+
+			/*
+			 * Don't cache NSEC if missing NSEC or RRSIG
+			 * types.
 			 */
 			if (rdataset->type == dns_rdatatype_nsec &&
-			    !dns_nsec_requiredtypespresent(rdataset))
+			    !dns_nsec_is_legal(rdataset, signer))
 			{
 				continue;
 			}
@@ -5786,9 +5975,9 @@ validated(void *arg) {
 	inc_stats(res, dns_resstatscounter_valsuccess);
 
 	if (val->proofs[DNS_VALIDATOR_NOQNAMEPROOF] != NULL) {
-		result = dns_rdataset_addnoqname(
-			val->rdataset, val->proofs[DNS_VALIDATOR_NOQNAMEPROOF]);
-		RUNTIME_CHECK(result == ISC_R_SUCCESS);
+		CHECK(dns_rdataset_addnoqname(
+			val->rdataset,
+			val->proofs[DNS_VALIDATOR_NOQNAMEPROOF]));
 		INSIST(val->sigrdataset != NULL);
 		val->sigrdataset->ttl = val->rdataset->ttl;
 		if (val->proofs[DNS_VALIDATOR_CLOSESTENCLOSER] != NULL) {
@@ -6237,6 +6426,14 @@ rctx_cachename(respctx_t *rctx, dns_message_t *message, dns_name_t *name) {
 			goto cleanup;
 		}
 
+		/*
+		 * If CNAME, delete other RRsets at the same name
+		 * from the cache.
+		 */
+		if (rdataset->type == dns_rdatatype_cname) {
+			evict_cname_other(fctx, name);
+		}
+
 		/* Find the signature for this rdataset */
 		sigrdataset = getrrsig(name, rdataset->type);
 
@@ -6391,8 +6588,32 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
 	result = dns_ncache_add(message, cache, node, covers, now, minttl,
 				maxttl, optout, secure, added);
 
+	/*
+	 * We failed to add the negative cache entry and some rdataset was
+	 * returned.  If we were adding dns_rdatatype_any, this could be of a
+	 * different type than was originally requested.
+	 */
+	if (result == DNS_R_UNCHANGED) {
+		/*
+		 * We got the same negative type that we were adding, everything
+		 * is fine, continue.
+		 */
+		if (NEGATIVE(added) && added->covers == covers) {
+			result = ISC_R_SUCCESS;
+		} else {
+			dns_rdataset_disassociate(added);
+			dns_db_detachnode(&node);
+			return DNS_R_SERVFAIL;
+		}
+	}
+
 	if (added == &rdataset) {
 		dns_rdataset_cleanup(added);
+	}
+
+	if (result != ISC_R_SUCCESS) {
+		dns_db_detachnode(&node);
+		return result;
 	}
 
 	*nodep = node;
@@ -6404,7 +6625,7 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
  * Cache the negatively cacheable parts of the message.  This may
  * also cause work to be queued to the DNSSEC validator.
  */
-static void
+static isc_result_t
 rctx_ncache(respctx_t *rctx) {
 	isc_result_t result = ISC_R_SUCCESS;
 	fetchctx_t *fctx = rctx->fctx;
@@ -6490,6 +6711,7 @@ done:
 	if (result != ISC_R_SUCCESS) {
 		FCTXTRACE3("rctx_ncache complete", result);
 	}
+	return result;
 }
 
 static void
@@ -6606,9 +6828,27 @@ name_external(const dns_name_t *name, dns_rdatatype_t type, respctx_t *rctx) {
 	return false;
 }
 
-static void
+static size_t
 cache_delegglue(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
-		dns_rdataset_t *rdataset) {
+		respctx_t *rctx, const dns_name_t *nsname) {
+	dns_rdataset_t *rdataset = NULL;
+	size_t naddrs = 0;
+	isc_result_t result;
+	dns_resolver_t *res = rctx->fctx->res;
+	bool hasv4 = res->dispatches4 != NULL;
+	bool dns64 = !ISC_LIST_EMPTY(res->view->dns64) && res->view->usedns64;
+
+	if (!hasv4 && !dns64) {
+		return 0;
+	}
+
+	result = dns_message_findname(rctx->query->rmessage,
+				      DNS_SECTION_ADDITIONAL, nsname,
+				      dns_rdatatype_a, 0, NULL, &rdataset);
+	if (result != ISC_R_SUCCESS) {
+		return 0;
+	}
+
 	if (rdataset->ttl < *ttl) {
 		*ttl = rdataset->ttl;
 	}
@@ -6622,12 +6862,33 @@ cache_delegglue(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
 		dns_rdata_tostruct(&rdata, &a, NULL);
 		addr.type.in = a.in_addr;
 		dns_delegset_addaddr(delegset, deleg, &addr);
+		naddrs++;
+
+		if (naddrs >= DELEG_MAX_GLUES_PER_NS) {
+			break;
+		}
 	}
+	return naddrs;
 }
 
-static void
+static size_t
 cache_delegglue6(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
-		 dns_rdataset_t *rdataset) {
+		 respctx_t *rctx, const dns_name_t *nsname) {
+	dns_rdataset_t *rdataset = NULL;
+	size_t naddrs = 0;
+	isc_result_t result;
+
+	if (rctx->fctx->res->dispatches6 == NULL) {
+		return 0;
+	}
+
+	result = dns_message_findname(rctx->query->rmessage,
+				      DNS_SECTION_ADDITIONAL, nsname,
+				      dns_rdatatype_aaaa, 0, NULL, &rdataset);
+	if (result != ISC_R_SUCCESS) {
+		return 0;
+	}
+
 	if (rdataset->ttl < *ttl) {
 		*ttl = rdataset->ttl;
 	}
@@ -6641,7 +6902,13 @@ cache_delegglue6(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
 		dns_rdata_tostruct(&rdata, &aaaa, NULL);
 		addr.type.in6 = aaaa.in6_addr;
 		dns_delegset_addaddr(delegset, deleg, &addr);
+		naddrs++;
+
+		if (naddrs >= DELEG_MAX_GLUES_PER_NS) {
+			break;
+		}
 	}
+	return naddrs;
 }
 
 /*
@@ -6662,31 +6929,25 @@ cache_delegns(respctx_t *rctx) {
 	dns_delegdb_t *delegdb = fctx->res->view->deleg;
 	dns_delegset_t *delegset = NULL;
 	dns_ttl_t ttl = rctx->ns_rdataset->ttl;
-	dns_fixedname_t fparent;
-	dns_name_t *parent = dns_fixedname_initname(&fparent);
 	size_t labels;
+	size_t ns_count = 0;
+	size_t max_servers = fctx->res->view->max_delegation_servers;
 	isc_result_t result;
 
 	FCTXTRACE("cache_delegns");
 
 	dns_delegset_allocset(delegdb, &delegset);
 
-	/*
-	 * The top of the delegated zone is `rctx->ns_name`. So truncating
-	 * the first label gives the common parent domain allowed to get
-	 * glues (this allows in-domain and sibling, but not different
-	 * parents).
-	 */
-	labels = dns_name_countlabels(rctx->ns_name);
-	if (labels > 1) {
-		dns_name_getlabelsequence(rctx->ns_name, 1, labels - 1, parent);
-	}
-
 	DNS_RDATASET_FOREACH(rctx->ns_rdataset) {
-		dns_rdataset_t *gluerdataset = NULL;
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdata_ns_t ns;
 		dns_deleg_t *deleg = NULL;
+		size_t naddrs = 0;
+
+		if (ns_count >= max_servers) {
+			break;
+		}
+		ns_count++;
 
 		/*
 		 * We can't "group" all NS-based delegations into a single
@@ -6702,32 +6963,57 @@ cache_delegns(respctx_t *rctx) {
 		INSIST(rdata.type == dns_rdatatype_ns);
 		dns_rdata_tostruct(&rdata, &ns, NULL);
 
-		if (labels > 1 && dns_name_issubdomain(&ns.name, parent)) {
-			result = dns_message_findname(rctx->query->rmessage,
-						      DNS_SECTION_ADDITIONAL,
-						      &ns.name, dns_rdatatype_a,
-						      0, NULL, &gluerdataset);
-			if (result == ISC_R_SUCCESS) {
-				cache_delegglue(delegset, deleg, &ttl,
-						gluerdataset);
-				gluerdataset = NULL;
-			}
+		/* in-domain GLUE */
+		if (dns_name_issubdomain(&ns.name, rctx->ns_name)) {
+			naddrs += cache_delegglue(delegset, deleg, &ttl, rctx,
+						  &ns.name);
+			naddrs += cache_delegglue6(delegset, deleg, &ttl, rctx,
+						   &ns.name);
+			if (naddrs == 0) {
+				INSIST(ISC_LIST_EMPTY(deleg->addresses));
+				char namebuf[DNS_NAME_FORMATSIZE];
+				dns_name_format(&ns.name, namebuf,
+						sizeof(namebuf));
 
-			result = dns_message_findname(
-				rctx->query->rmessage, DNS_SECTION_ADDITIONAL,
-				&ns.name, dns_rdatatype_aaaa, 0, NULL,
-				&gluerdataset);
-			if (result == ISC_R_SUCCESS) {
-				cache_delegglue6(delegset, deleg, &ttl,
-						 gluerdataset);
-				gluerdataset = NULL;
+				isc_log_write(DNS_LOGCATEGORY_RESOLVER,
+					      DNS_LOGMODULE_RESOLVER,
+					      ISC_LOG_NOTICE,
+					      "missing mandatory glue for %s",
+					      namebuf);
+				dns_delegset_freedeleg(delegset, &deleg);
+			}
+			continue;
+		}
+
+		/*
+		 * in-bailiwick/sibling GLUE
+		 *
+		 * The top of the delegated zone is `rctx->ns_name`. So
+		 * truncating the first label gives the common parent domain
+		 * allowed to get glues (this allows in-domain and sibling, but
+		 * not different parents).
+		 */
+		labels = dns_name_countlabels(rctx->ns_name);
+		if (labels > 1) {
+			dns_fixedname_t fparent;
+			dns_name_t *parent = dns_fixedname_initname(&fparent);
+
+			dns_name_getlabelsequence(rctx->ns_name, 1, labels - 1,
+						  parent);
+
+			if (dns_name_issubdomain(&ns.name, parent)) {
+				naddrs += cache_delegglue(delegset, deleg, &ttl,
+							  rctx, &ns.name);
+				naddrs += cache_delegglue6(
+					delegset, deleg, &ttl, rctx, &ns.name);
 			}
 		}
 
-		if (ISC_LIST_EMPTY(deleg->addresses)) {
+		if (naddrs == 0) {
+			INSIST(ISC_LIST_EMPTY(deleg->addresses));
 			/*
-			 * There is actually no glues for this NSRRset, so this
-			 * is actually a DNS_DELEGTYPE_NS_NAMES.
+			 * There are actually no glues for this NSRRset,
+			 * so this is actually a DNS_DELEGTYPE_NS_NAMES.
 			 */
 			deleg->type = DNS_DELEGTYPE_NS_NAMES;
 			dns_delegset_addns(delegset, deleg, &ns.name);
@@ -7677,11 +7963,6 @@ resquery_response_continue(void *arg, isc_result_t result) {
 
 	if (result != ISC_R_SUCCESS) {
 		FCTXTRACE3("signature check failed", result);
-		if (result == DNS_R_UNEXPECTEDTSIG ||
-		    result == DNS_R_EXPECTEDTSIG)
-		{
-			rctx->nextitem = true;
-		}
 		rctx_done(rctx, result);
 		goto cleanup;
 	}
@@ -7905,7 +8186,10 @@ resquery_response_continue(void *arg, isc_result_t result) {
 	/*
 	 * Negative caching
 	 */
-	rctx_ncache(rctx);
+	isc_result_t nresult = rctx_ncache(rctx);
+	if (nresult != ISC_R_SUCCESS) {
+		result = nresult;
+	}
 
 	FCTXTRACE("resquery_response done");
 	rctx_done(rctx, result);
@@ -7961,7 +8245,7 @@ rctx_answer_init(respctx_t *rctx) {
 	}
 
 	/*
-	 * There can be multiple RRSIG and SIG records at a name so
+	 * There can be multiple RRSIG records at a name so
 	 * we treat these types as a subset of ANY.
 	 */
 	rctx->type = fctx->type;
@@ -7990,7 +8274,6 @@ rctx_answer_init(respctx_t *rctx) {
 	rctx->ns_rdataset = NULL;
 
 	rctx->soa_name = NULL;
-	rctx->ds_name = NULL;
 	rctx->found_name = NULL;
 
 	rctx->vrdataset = NULL;
@@ -8036,6 +8319,22 @@ rctx_dispfail(respctx_t *rctx) {
 		rctx->broken_type = badns_unreachable;
 		rctx->finish = NULL;
 		rctx->no_response = true;
+		break;
+	case DNS_R_MISMATCH:
+		/*
+		 * The dispatcher saw a UDP response from the expected peer with
+		 * the wrong DNS message id.  Retry the same query over TCP.
+		 */
+		if ((rctx->retryopts & DNS_FETCHOPT_TCP) == 0) {
+			rctx->retryopts |= DNS_FETCHOPT_TCP;
+			rctx->resend = true;
+			rctx->next_server = false;
+			inc_stats(fctx->res, dns_resstatscounter_mismatchtcp);
+			FCTXTRACE3("mismatched response; retrying over TCP",
+				   rctx->result);
+			rctx_done(rctx, ISC_R_SUCCESS);
+			return ISC_R_COMPLETE;
+		}
 		break;
 	default:
 		break;
@@ -8605,6 +8904,19 @@ rctx_answer_any(respctx_t *rctx) {
 		rdataset->trust = rctx->trust;
 	}
 
+	/*
+	 * An RRSIG query is handled as a subset of ANY; if every record in
+	 * the answer was filtered out above, nothing was marked cacheable,
+	 * so there is nothing to cache, validate, or chase.  Treat that as a
+	 * broken answer instead of returning success with no answer, which
+	 * would leave the fetch waiting for a validator that is never
+	 * started.
+	 */
+	if (!rctx->aname->attributes.cache) {
+		rctx->result = DNS_R_FORMERR;
+		return ISC_R_COMPLETE;
+	}
+
 	return ISC_R_SUCCESS;
 }
 
@@ -8679,16 +8991,6 @@ rctx_answer_cname(respctx_t *rctx) {
 	fetchctx_t *fctx = rctx->fctx;
 
 	if (!validinanswer(rctx->crdataset, fctx)) {
-		rctx->result = DNS_R_FORMERR;
-		return ISC_R_COMPLETE;
-	}
-
-	if (rctx->type == dns_rdatatype_rrsig ||
-	    rctx->type == dns_rdatatype_key || rctx->type == dns_rdatatype_nsec)
-	{
-		char buf[DNS_RDATATYPE_FORMATSIZE];
-		dns_rdatatype_format(rctx->type, buf, sizeof(buf));
-		log_formerr(fctx, "CNAME response for %s RR", buf);
 		rctx->result = DNS_R_FORMERR;
 		return ISC_R_COMPLETE;
 	}
@@ -9026,6 +9328,10 @@ rctx_authority_negative(respctx_t *rctx) {
 
 			switch (type) {
 			case dns_rdatatype_ns:
+				if (name_external(name, dns_rdatatype_ns, rctx))
+				{
+					continue;
+				}
 				/*
 				 * NS or RRSIG NS.
 				 *
@@ -9139,34 +9445,34 @@ rctx_authority_dnssec(respctx_t *rctx) {
 				 * marked.
 				 */
 				break;
-			case dns_rdatatype_ds:
+			case dns_rdatatype_ds:;
 				/*
-				 * DS or SIG DS.
+				 * DS or RRSIG(DS).
 				 *
 				 * These should only be here if this is
 				 * a referral, and there should only be
 				 * one DS RRset.
 				 */
+				const char *typestr = (rdataset->type ==
+						       dns_rdatatype_ds)
+							      ? "DS"
+							      : "RRSIG(DS)";
+
 				if (rctx->ns_name == NULL) {
-					log_formerr(fctx,
-						    "DS with no referral");
+					log_formerr(fctx, "%s with no referral",
+						    typestr);
 					rctx->result = DNS_R_FORMERR;
 					return ISC_R_COMPLETE;
 				}
 
-				if (rdataset->type == dns_rdatatype_ds) {
-					if (rctx->ds_name != NULL &&
-					    name != rctx->ds_name)
-					{
-						log_formerr(fctx,
-							    "DS doesn't match "
-							    "referral (NS)");
-						rctx->result = DNS_R_FORMERR;
-						return ISC_R_COMPLETE;
-					}
-					rctx->ds_name = name;
+				if (name != rctx->ns_name) {
+					log_formerr(fctx,
+						    "%s doesn't match the "
+						    "delegation owner name",
+						    typestr);
+					rctx->result = DNS_R_FORMERR;
+					return ISC_R_COMPLETE;
 				}
-
 				name->attributes.cache = true;
 				rdataset->attributes.cache = true;
 
@@ -9208,6 +9514,25 @@ rctx_referral(respctx_t *rctx) {
 		return ISC_R_SUCCESS;
 	}
 
+	if (name_external(rctx->ns_name, dns_rdatatype_ns, rctx)) {
+		log_formerr(fctx, "external referral");
+		rctx->result = DNS_R_FORMERR;
+		return ISC_R_COMPLETE;
+	}
+
+	/*
+	 * If a global forwarder is in use, we don't want to cache its
+	 * referrals. Dual-stack alternates are not treated as forwarders for
+	 * namespace checks, even if their address info uses the forwarder flag.
+	 */
+	if (ISFORWARDER(fctx->addrinfo) && !ISDUALSTACK(fctx->addrinfo) &&
+	    dns_name_equal(fctx->fwdname, dns_rootname))
+	{
+		log_formerr(fctx, "referral from global forwarder");
+		rctx->result = DNS_R_FORMERR;
+		return ISC_R_COMPLETE;
+	}
+
 	/*
 	 * We already know ns_name is a subdomain of fctx->domain.
 	 * If ns_name is equal to fctx->domain, we're not making
@@ -9230,17 +9555,6 @@ rctx_referral(respctx_t *rctx) {
 		FCTXTRACE("referral to non-parent");
 		rctx->result = DNS_R_FORMERR;
 		return ISC_R_COMPLETE;
-	}
-
-	/*
-	 * NS rdatasets with 0 TTL cause problems.
-	 * dns_view_findzonecut() will not find them when we
-	 * try to follow the referral, and we'll SERVFAIL
-	 * because the best nameservers are now above QDOMAIN.
-	 * We force the TTL to 1 second to prevent this.
-	 */
-	if (rctx->ns_rdataset->ttl == 0) {
-		rctx->ns_rdataset->ttl = 1;
 	}
 
 	/*
@@ -9792,7 +10106,8 @@ rctx_badserver(respctx_t *rctx, isc_result_t result) {
 		rctx->resend = true;
 	} else if (ISFORWARDER(query->addrinfo) &&
 		   query->rmessage->rcode == dns_rcode_servfail &&
-		   (query->options & DNS_FETCHOPT_TRYCD) != 0)
+		   (query->options & DNS_FETCHOPT_TRYNOCD) != 0 &&
+		   (query->options & DNS_FETCHOPT_TRYCD) == 0)
 	{
 		/*
 		 * We got a SERVFAIL from a forwarder with
@@ -10506,15 +10821,15 @@ is_samedomain(const dns_name_t *domain1, const dns_name_t *domain2) {
 }
 
 static bool
-waiting_for_fetch(fetchctx_t *fctx, const dns_name_t *name,
-		  dns_rdatatype_t type, const dns_name_t *domain) {
-	while (fctx != NULL) {
-		if (type == fctx->type && !dns_name_compare(name, fctx->name)) {
-			if (is_samedomain(domain, fctx->domain)) {
-				return true;
-			}
+waiting_for_fetch(const fetchctx_t *parent, const fetchctx_t *cur) {
+	for (const fetchctx_t *fctx = parent; fctx != NULL; fctx = fctx->parent)
+	{
+		if (cur->type == fctx->type &&
+		    !dns_name_compare(cur->name, fctx->name) &&
+		    is_samedomain(cur->domain, fctx->domain))
+		{
+			return true;
 		}
-		fctx = fctx->parent;
 	}
 	return false;
 }
@@ -10559,34 +10874,6 @@ dns_resolver_createfetch(dns_resolver_t *res, const dns_name_t *name,
 	}
 
 	log_fetch(name, type);
-
-	/*
-	 * This fetch loop detection enable to guard against loop scenarios
-	 * where the DNSSEC is involved. See
-	 * `4d307ac67a0e3f9831c9a4e66ac481e2f9ceebb5`. This is a complementary
-	 * detection with the ADB lookup loop detection (in `findname()`).
-	 */
-	if (waiting_for_fetch(parent, name, type, domain)) {
-		if (isc_log_wouldlog(ISC_LOG_INFO)) {
-			char namebuf[DNS_NAME_FORMATSIZE + 1];
-			char typebuf[DNS_RDATATYPE_FORMATSIZE];
-			char domainbuf[DNS_NAME_FORMATSIZE + 1] = { 0 };
-
-			dns_name_format(name, namebuf, sizeof(namebuf));
-			dns_rdatatype_format(type, typebuf, sizeof(typebuf));
-			if (domain != NULL) {
-				dns_name_format(domain, domainbuf,
-						sizeof(domainbuf));
-			}
-
-			isc_log_write(DNS_LOGCATEGORY_RESOLVER,
-				      DNS_LOGMODULE_RESOLVER, ISC_LOG_DEBUG(2),
-				      "fetch loop detected resolving '%s/%s "
-				      "(in '%s'?)",
-				      namebuf, typebuf, domainbuf);
-		}
-		return DNS_R_LOOPDETECTED;
-	}
 
 	fetch = isc_mem_get(mctx, sizeof(*fetch));
 	*fetch = (dns_fetch_t){ 0 };
@@ -10650,6 +10937,36 @@ dns_resolver_createfetch(dns_resolver_t *res, const dns_name_t *name,
 	}
 
 	RUNTIME_CHECK(fctx != NULL);
+
+	/*
+	 * This fetch loop detection enable to guard against loop scenarios
+	 * where the DNSSEC is involved. See
+	 * `4d307ac67a0e3f9831c9a4e66ac481e2f9ceebb5`. This is a complementary
+	 * detection with the ADB lookup loop detection (in `findname()`).
+	 */
+	if (!new_fctx && waiting_for_fetch(parent, fctx)) {
+		if (isc_log_wouldlog(ISC_LOG_INFO)) {
+			char namebuf[DNS_NAME_FORMATSIZE + 1];
+			char typebuf[DNS_RDATATYPE_FORMATSIZE];
+			char domainbuf[DNS_NAME_FORMATSIZE + 1] = { 0 };
+
+			dns_name_format(name, namebuf, sizeof(namebuf));
+			dns_rdatatype_format(type, typebuf, sizeof(typebuf));
+			if (domain != NULL) {
+				dns_name_format(domain, domainbuf,
+						sizeof(domainbuf));
+			}
+
+			isc_log_write(DNS_LOGCATEGORY_RESOLVER,
+				      DNS_LOGMODULE_RESOLVER, ISC_LOG_DEBUG(2),
+				      "fetch loop detected resolving '%s/%s "
+				      "(in '%s'?)",
+				      namebuf, typebuf, domainbuf);
+		}
+
+		result = DNS_R_LOOPDETECTED;
+		goto unlock;
+	}
 
 	if (fctx->depth > depth) {
 		fctx->depth = depth;

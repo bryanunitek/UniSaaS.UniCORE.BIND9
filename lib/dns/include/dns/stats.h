@@ -71,7 +71,8 @@ enum {
 	dns_resstatscounter_nextitem = 38,
 	dns_resstatscounter_priming = 39,
 	dns_resstatscounter_forwardonlyfail = 40,
-	dns_resstatscounter_max = 41,
+	dns_resstatscounter_mismatchtcp = 41,
+	dns_resstatscounter_max = 42,
 
 	/*
 	 * DNSSEC stats.
@@ -234,16 +235,13 @@ enum {
  * _STALE
  *	RRset type counters only.  This indicates a record that is stale
  *	but may still be served.
- *
- * _ANCIENT
- *	RRset type counters only.  This indicates a record that is marked for
- *	removal.
  */
-#define DNS_RDATASTATSTYPE_ATTR_OTHERTYPE 0x0001
-#define DNS_RDATASTATSTYPE_ATTR_NXRRSET	  0x0002
-#define DNS_RDATASTATSTYPE_ATTR_NXDOMAIN  0x0004
-#define DNS_RDATASTATSTYPE_ATTR_STALE	  0x0008
-#define DNS_RDATASTATSTYPE_ATTR_ANCIENT	  0x0010
+enum {
+	DNS_RDATASTATSTYPE_ATTR_OTHERTYPE = 1 << 0,
+	DNS_RDATASTATSTYPE_ATTR_NXRRSET = 1 << 1,
+	DNS_RDATASTATSTYPE_ATTR_NXDOMAIN = 1 << 2,
+	DNS_RDATASTATSTYPE_ATTR_STALE = 1 << 3,
+};
 
 /*%<
  * Conversion macros among dns_rdatatype_t, attributes and isc_statscounter_t.

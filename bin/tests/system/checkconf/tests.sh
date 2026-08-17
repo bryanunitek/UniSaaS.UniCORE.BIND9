@@ -277,6 +277,9 @@ l=$(grep "missing 'file' entry" <checkconf.out$n.2 | wc -l)
 $CHECKCONF inline-bad.conf >checkconf.out$n.3 2>&1 && ret=1
 l=$(grep "missing 'file' entry" <checkconf.out$n.3 | wc -l)
 [ $l -eq 1 ] || ret=1
+$CHECKCONF inline-inherit.conf >checkconf.out$n.3 2>&1 && ret=1
+l=$(grep "missing 'file' entry" <checkconf.out$n.3 | wc -l)
+[ $l -eq 1 ] || ret=1
 if [ $ret -ne 0 ]; then echo_i "failed"; fi
 status=$((status + ret))
 
@@ -336,16 +339,6 @@ n=$((n + 1))
 echo_i "checking that named-checkconf -z catches invalid max-ttl ($n)"
 ret=0
 $CHECKCONF -z max-ttl-bad.conf >checkconf.out$n 2>&1 && ret=1
-if [ $ret -ne 0 ]; then
-  echo_i "failed"
-  ret=1
-fi
-status=$((status + ret))
-
-n=$((n + 1))
-echo_i "checking that named-checkconf -z skips zone check with alternate databases ($n)"
-ret=0
-$CHECKCONF -z altdb.conf >checkconf.out$n 2>&1 || ret=1
 if [ $ret -ne 0 ]; then
   echo_i "failed"
   ret=1
@@ -733,17 +726,6 @@ echo_i "check that 'check-wildcard yes;' warns as configured ($n)"
 ret=0
 $CHECKCONF -z check-wildcard.conf >checkconf.out$n 2>&1 || ret=1
 grep -F "warning: ownername 'foo.*.check-wildcard' contains an non-terminal wildcard" checkconf.out$n >/dev/null || ret=1
-if [ $ret != 0 ]; then
-  echo_i "failed"
-  ret=1
-fi
-status=$((status + ret))
-
-n=$((n + 1))
-echo_i "check 'recursion yes;' is warned and disabled in a non-IN view ($n)"
-ret=0
-$CHECKCONF warn-chaos-recursion.conf >checkconf.out$n 2>&1 || ret=1
-grep -F "recursion will be disabled" checkconf.out$n >/dev/null || ret=1
 if [ $ret != 0 ]; then
   echo_i "failed"
   ret=1

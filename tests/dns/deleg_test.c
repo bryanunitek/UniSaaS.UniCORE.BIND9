@@ -37,8 +37,10 @@ isc_stdtime_now(void) {
 
 #include <isc/lib.h>
 #include <isc/list.h>
+#include <isc/loop.h>
 #include <isc/netaddr.h>
 #include <isc/stdtime.h>
+#include <isc/urcu.h>
 
 #include <dns/deleg.h>
 #include <dns/fixedname.h>
@@ -52,6 +54,15 @@ isc_stdtime_now(void) {
 
 #include <tests/isc.h>
 
+/*
+ * cleanuptests adds NENTRIES address entries to a delegset; each is an
+ * isc_netaddrlink_t whose size depends on sizeof(void *) via ISC_LINK.
+ * Express memory expectations in terms of that struct so the test works
+ * on both 32-bit and 64-bit targets.
+ */
+#define NENTRIES       99999
+#define ENTRIES_MEM(n) ((size_t)(n) * sizeof(isc_netaddrlink_t))
+
 static void
 shutdownloop(ISC_ATTR_UNUSED void *arg) {
 	isc_loopmgr_shutdown();
@@ -59,7 +70,6 @@ shutdownloop(ISC_ATTR_UNUSED void *arg) {
 
 static void
 shutdowntest(dns_delegdb_t **dbp) {
-	dns_delegdb_shutdown(*dbp);
 	dns_delegdb_detach(dbp);
 	shutdownloop(NULL);
 }
@@ -155,7 +165,9 @@ dumpdb(dns_delegdb_t *db, bool expired, const char *expected) {
 	REQUIRE(fp != NULL);
 	REQUIRE(fread(buffer, sizeof(buffer) - 1, 1, fp) == 0);
 
-	assert_string_equal(expected, buffer);
+	if (expected != NULL) {
+		assert_string_equal(expected, buffer);
+	}
 
 	REQUIRE(fclose(fp) == 0);
 	REQUIRE(unlink(filename) == 0);
@@ -358,7 +370,7 @@ basictests(ISC_ATTR_UNUSED void *arg) {
 }
 
 static void
-ttl0tests(ISC_ATTR_UNUSED void *arg) {
+ttltests(ISC_ATTR_UNUSED void *arg) {
 	isc_result_t result;
 	dns_delegdb_t *db = NULL;
 	dns_deleg_t *deleg = NULL;
@@ -385,12 +397,61 @@ ttl0tests(ISC_ATTR_UNUSED void *arg) {
 	writedb(db, "bar.stuff.", 0, &delegset, true);
 	deleg = NULL;
 
+	/*
+	 * This is possible because delegdb internally forces TTL of 1 if the
+	 * caller TTL is 0, in the case of the minttl config is disabled.
+	 */
 	result = lookupdb(db, "baz.bar.stuff.", now, 0, "bar.stuff.",
 			  &delegset);
 	assert_int_equal(result, ISC_R_SUCCESS);
 	dns_delegset_detach(&delegset);
 
 	result = lookupdb(db, "baz.bar.stuff.", now + 1, 0, "", &delegset);
+	assert_int_equal(result, ISC_R_NOTFOUND);
+
+	dns_delegdb_setconfig(db, &(dns_delegdb_config_t){ .minttl = 60 });
+	dns_delegset_allocset(db, &delegset);
+
+	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_NAMES, &deleg);
+	addnamedeleg("ns.gee.bar.stuff.", delegset, deleg, dns_delegset_addns);
+	deleg = NULL;
+
+	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_ADDRESSES,
+				&deleg);
+	addipdeleg(AF_INET6, "3333::2222", delegset, deleg);
+	deleg = NULL;
+
+	writedb(db, "gee.bar.stuff.", 2, &delegset, true);
+	deleg = NULL;
+
+	result = lookupdb(db, "gee.bar.stuff.", now + 59, 0, "gee.bar.stuff.",
+			  &delegset);
+	assert_int_equal(result, ISC_R_SUCCESS);
+	dns_delegset_detach(&delegset);
+
+	result = lookupdb(db, "gee.bar.stuff.", now + 61, 0, "", &delegset);
+	assert_int_equal(result, ISC_R_NOTFOUND);
+
+	dns_delegdb_setconfig(db, &(dns_delegdb_config_t){ .maxttl = 160 });
+	dns_delegset_allocset(db, &delegset);
+
+	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_NAMES, &deleg);
+	addnamedeleg("ns.gee.", delegset, deleg, dns_delegset_addns);
+	deleg = NULL;
+
+	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_ADDRESSES,
+				&deleg);
+	addipdeleg(AF_INET6, "4444::2222", delegset, deleg);
+	deleg = NULL;
+
+	writedb(db, "gee.", 200, &delegset, true);
+	deleg = NULL;
+
+	result = lookupdb(db, "gee.", now + 159, 0, "gee.", &delegset);
+	assert_int_equal(result, ISC_R_SUCCESS);
+	dns_delegset_detach(&delegset);
+
+	result = lookupdb(db, "gee.", now + 200, 0, "", &delegset);
 	assert_int_equal(result, ISC_R_NOTFOUND);
 
 	shutdowntest(&db);
@@ -565,98 +626,26 @@ deletetests(ISC_ATTR_UNUSED void *arg) {
 	shutdowntest(&db);
 }
 
-/*
- * The cleanup test is split into phases because node destruction is now
- * fully deferred to the node's owning loop via isc_async_run().  After
- * rcu_barrier() completes, the QP reclamation has fired (calling
- * delegdb_node_destroy which schedules the async callback), but the
- * actual memory free hasn't happened yet — it's pending on the loop's
- * event queue.  We must return to the loop between phases so it can
- * process the pending node destroys before we check memory usage.
- */
-typedef struct {
-	dns_delegdb_t *db;
-	isc_stdtime_t now;
-} cleanup_ctx_t;
-
-static void
-cleanuptests_phase3(void *arg) {
-	cleanup_ctx_t *ctx = arg;
-	dns_delegdb_t *db = ctx->db;
-	isc_stdtime_t now = ctx->now;
-	dns_delegset_t *delegset = NULL;
-	isc_result_t result;
-
-	assert_int_in_range(isc_mem_inuse(db->mctx), 8000000, 8100000);
-
-	/*
-	 * baz. is there, but bar. is gone, as it has been
-	 * removed (even if it wasn't expired.)
-	 */
-	result = lookupdb(db, "baz.", now, 0, "baz.", &delegset);
-	assert_int_equal(result, ISC_R_SUCCESS);
-	dns_delegset_detach(&delegset);
-
-	result = lookupdb(db, "bar.", now, 0, "bar.", &delegset);
-	assert_int_equal(result, ISC_R_NOTFOUND);
-
-	shutdowntest(&db);
-}
-
-static void
-cleanuptests_phase2(void *arg) {
-	cleanup_ctx_t *ctx = arg;
-	dns_delegdb_t *db = ctx->db;
-	isc_stdtime_t now = ctx->now;
-	dns_deleg_t *deleg = NULL;
-	dns_delegset_t *delegset = NULL;
-	isc_result_t result;
-
-	assert_int_in_range(isc_mem_inuse(db->mctx), 4000000, 4100000);
-
-	/*
-	 * bar. is there
-	 */
-	result = lookupdb(db, "bar.", now, 0, "bar.", &delegset);
-	assert_int_equal(result, ISC_R_SUCCESS);
-	dns_delegset_detach(&delegset);
-
-	/*
-	 * Add yet another non expired record. But LRU will have to get
-	 * rid of it because we're hitting the hiwater mark again.
-	 */
-	dns_delegset_allocset(db, &delegset);
-	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_ADDRESSES,
-				&deleg);
-
-	for (size_t i = 0; i < 99999; i++) {
-		addipdeleg(AF_INET6, "1111::2222", delegset, deleg);
-	}
-	assert_int_in_range(isc_mem_inuse(db->mctx), 8000000, 8100000);
-	writedb(db, "baz.", 30, &delegset, true);
-	deleg = NULL;
-
-	rcu_barrier();
-	isc_async_run(isc_loop(), cleanuptests_phase3, ctx);
-}
-
 static void
 cleanuptests(ISC_ATTR_UNUSED void *arg) {
-	static cleanup_ctx_t ctx;
 	dns_delegdb_t *db = NULL;
 	dns_deleg_t *deleg = NULL;
 	dns_delegset_t *delegset = NULL;
-
-	dns_delegdb_create(&db);
-	assert_non_null(db);
-
-	ctx = (cleanup_ctx_t){ .db = db, .now = isc_stdtime_now() };
+	isc_stdtime_t now;
+	isc_result_t result;
 
 	/*
 	 * hiwater is 4375000 = 5000000 - (5000000 >> 3)
 	 * lowater is 3750000 = 5000000 - (5000000 >> 2)
 	 */
-	dns_delegdb_setsize(db, 5000000);
+	dns_delegdb_config_t config = { .dbsize = 5000000 };
+
+	dns_delegdb_create(&db);
+	assert_non_null(db);
+
+	now = isc_stdtime_now();
+
+	dns_delegdb_setconfig(db, &config);
 
 	/*
 	 * A valid record
@@ -677,11 +666,12 @@ cleanuptests(ISC_ATTR_UNUSED void *arg) {
 
 	assert_int_in_range(isc_mem_inuse(db->mctx), 500, 2000);
 
-	for (size_t i = 0; i < 99999; i++) {
+	for (size_t i = 0; i < NENTRIES; i++) {
 		addipdeleg(AF_INET6, "1111::2222", delegset, deleg);
 	}
 
-	assert_int_in_range(isc_mem_inuse(db->mctx), 4000000, 4100000);
+	assert_int_in_range(isc_mem_inuse(db->mctx), ENTRIES_MEM(NENTRIES),
+			    ENTRIES_MEM(NENTRIES) + 100000);
 
 	writedb(db, "stuff.", 10, &delegset, true);
 	deleg = NULL;
@@ -694,7 +684,7 @@ cleanuptests(ISC_ATTR_UNUSED void *arg) {
 	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_ADDRESSES,
 				&deleg);
 
-	for (size_t i = 0; i < 99999; i++) {
+	for (size_t i = 0; i < NENTRIES; i++) {
 		addipdeleg(AF_INET6, "1111::2222", delegset, deleg);
 	}
 
@@ -703,33 +693,139 @@ cleanuptests(ISC_ATTR_UNUSED void *arg) {
 	 * with DB mem context) overmem conditions will be detected, and the
 	 * expired node will be removed
 	 */
-	assert_int_in_range(isc_mem_inuse(db->mctx), 8000000, 8100000);
+	assert_int_in_range(isc_mem_inuse(db->mctx), ENTRIES_MEM(2 * NENTRIES),
+			    ENTRIES_MEM(2 * NENTRIES) + 100000);
 	writedb(db, "bar.", 30, &delegset, true);
 	deleg = NULL;
 
 	/*
-	 * stuff. internal node (and delegset) is now removed. rcu_barrier()
-	 * is needed to kick off QP reclamation flow (and run the detaching
-	 * functions from the DB nodes).  The actual memory free is deferred
-	 * to the loop via isc_async_run(), so we continue in phase2 to let
-	 * the loop process the pending node destroys.
+	 * stuff. internal node (and delegset) is now removed.  Node
+	 * destruction runs synchronously inside the QP-trie chunk reclamation,
+	 * so rcu_barrier() is enough: once it returns, the evicted nodes have
+	 * been detached and freed.
 	 */
 	rcu_barrier();
-	isc_async_run(isc_loop(), cleanuptests_phase2, &ctx);
+
+	assert_int_in_range(isc_mem_inuse(db->mctx), ENTRIES_MEM(NENTRIES),
+			    ENTRIES_MEM(NENTRIES) + 100000);
+
+	/*
+	 * bar. is there
+	 */
+	result = lookupdb(db, "bar.", now, 0, "bar.", &delegset);
+	assert_int_equal(result, ISC_R_SUCCESS);
+	dns_delegset_detach(&delegset);
+
+	/*
+	 * Add yet another non expired record. But LRU will have to get
+	 * rid of it because we're hitting the hiwater mark again.
+	 */
+	dns_delegset_allocset(db, &delegset);
+	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_ADDRESSES,
+				&deleg);
+
+	for (size_t i = 0; i < NENTRIES; i++) {
+		addipdeleg(AF_INET6, "1111::2222", delegset, deleg);
+	}
+	assert_int_in_range(isc_mem_inuse(db->mctx), ENTRIES_MEM(2 * NENTRIES),
+			    ENTRIES_MEM(2 * NENTRIES) + 100000);
+	writedb(db, "baz.", 30, &delegset, true);
+	deleg = NULL;
+
+	/*
+	 * Re-adding baz. hit the hiwater mark and evicted bar.; wait for the
+	 * reclamation to free it before checking memory and final state.
+	 */
+	rcu_barrier();
+
+	assert_int_in_range(isc_mem_inuse(db->mctx), ENTRIES_MEM(2 * NENTRIES),
+			    ENTRIES_MEM(2 * NENTRIES) + 100000);
+
+	/*
+	 * baz. is there, but bar. is gone, as it has been
+	 * removed (even if it wasn't expired.)
+	 */
+	result = lookupdb(db, "baz.", now, 0, "baz.", &delegset);
+	assert_int_equal(result, ISC_R_SUCCESS);
+	dns_delegset_detach(&delegset);
+
+	result = lookupdb(db, "bar.", now, 0, "bar.", &delegset);
+	assert_int_equal(result, ISC_R_NOTFOUND);
+
+	shutdowntest(&db);
+}
+
+static void
+longnametests(ISC_ATTR_UNUSED void *arg) {
+	dns_delegdb_t *db = NULL;
+	dns_deleg_t *deleg = NULL;
+	dns_delegset_t *delegset = NULL;
+
+	dns_delegdb_create(&db);
+	assert_non_null(db);
+
+	dns_delegset_allocset(db, &delegset);
+	dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_DELEG_NAMES, &deleg);
+	addnamedeleg("ns."
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037."
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037."
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		     "\037\037\037\037\037.",
+		     delegset, deleg, dns_delegset_addns);
+	writedb(db,
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037."
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037."
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037\037\037\037\037\037\037\037\037\037"
+		"\037\037\037\037\037.",
+		10, &delegset, true);
+
+	/*
+	 * `dns_name_totext()` doesn't seems to apply the master zone escape
+	 * format, so the actual output wouldn't be the same. But the point of
+	 * the test is that we can run the dump code without overflow (with
+	 * address sanatizer enabled).
+	 */
+	dumpdb(db, false, NULL);
+
+	shutdowntest(&db);
 }
 
 ISC_RUN_TEST_IMPL(dns_deleg_basictests) { rundelegtest(basictests); }
-ISC_RUN_TEST_IMPL(dns_deleg_ttl0tests) { rundelegtest(ttl0tests); }
+ISC_RUN_TEST_IMPL(dns_deleg_ttltests) { rundelegtest(ttltests); }
 ISC_RUN_TEST_IMPL(dns_deleg_noexacttests) { rundelegtest(noexacttests); }
 ISC_RUN_TEST_IMPL(dns_deleg_deletetests) { rundelegtest(deletetests); }
 ISC_RUN_TEST_IMPL(dns_deleg_cleanuptests) { rundelegtest(cleanuptests); }
+ISC_RUN_TEST_IMPL(dns_deleg_longnametests) { rundelegtest(longnametests); }
 
 ISC_TEST_LIST_START
 ISC_TEST_ENTRY(dns_deleg_basictests)
-ISC_TEST_ENTRY(dns_deleg_ttl0tests)
+ISC_TEST_ENTRY(dns_deleg_ttltests)
 ISC_TEST_ENTRY(dns_deleg_noexacttests)
 ISC_TEST_ENTRY(dns_deleg_deletetests)
 ISC_TEST_ENTRY(dns_deleg_cleanuptests)
+ISC_TEST_ENTRY(dns_deleg_longnametests)
 ISC_TEST_LIST_END
 
 ISC_TEST_MAIN

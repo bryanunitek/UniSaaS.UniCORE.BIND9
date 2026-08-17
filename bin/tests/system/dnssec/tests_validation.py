@@ -182,6 +182,19 @@ def test_positive_validation_nsec3():
     isctest.check.rr_count_eq(res2.answer, 1)
 
 
+def test_positive_validation_dname_at_apex():
+    # an apex DNAME is signed by the DNSKEY living at the DNAME owner
+    # name itself; fetching that key must not be mistaken for a
+    # non-advancing alias chain (GL #6176)
+    msg = isctest.query.create("a.dname-at-apex-nsec3.example", "A")
+    res = isctest.query.tcp(msg, "10.53.0.4")
+    isctest.check.noerror(res)
+    isctest.check.adflag(res)
+    answers = {(str(rr.name), rr.rdtype) for rr in res.answer}
+    assert ("dname-at-apex-nsec3.example.", rdatatype.DNAME) in answers
+    assert ("a.example.", rdatatype.A) in answers
+
+
 def test_positive_validation_optout():
     # positive answer
     msg = isctest.query.create("a.optout.example", "A")
@@ -289,22 +302,6 @@ def test_chain_validation():
     isctest.check.same_answer(res1, res2)
     isctest.check.adflag(res2)
     assert answer_has(res2, rdatatype.CNAME)
-
-    # check KEY lookup via CNAME
-    msg = isctest.query.create("cnameandkey.secure.example", "KEY")
-    res1 = isctest.query.tcp(msg, "10.53.0.3")
-    res2 = isctest.query.tcp(msg, "10.53.0.4")
-    isctest.check.same_answer(res1, res2)
-    isctest.check.adflag(res2)
-    assert not answer_has(res2, rdatatype.CNAME)
-
-    # check KEY lookup via CNAME (not present)
-    msg = isctest.query.create("cnamenokey.secure.example", "KEY")
-    res1 = isctest.query.tcp(msg, "10.53.0.3")
-    res2 = isctest.query.tcp(msg, "10.53.0.4")
-    isctest.check.same_answer(res1, res2)
-    isctest.check.adflag(res2)
-    assert not answer_has(res2, rdatatype.CNAME)
 
     # check DNSKEY lookup via DNAME
     msg = isctest.query.create("a.dnameandkey.secure.example", "DNSKEY")
@@ -646,6 +643,7 @@ def test_negative_validation_optout():
     msg = isctest.query.create("delegation.single-nsec3", "A")
     res = isctest.query.tcp(msg, "10.53.0.2")
     isctest.check.noerror(res)
+    isctest.check.has_authority(res)
     for rrset in res.authority:
         if (
             rrset.rdtype != rdatatype.NSEC3
@@ -658,6 +656,7 @@ def test_negative_validation_optout():
     msg = isctest.query.create("nonexist.single-nsec3", "A")
     res = isctest.query.tcp(msg, "10.53.0.2")
     isctest.check.nxdomain(res)
+    isctest.check.has_authority(res)
     for rrset in res.authority:
         if (
             rrset.rdtype != rdatatype.NSEC3
@@ -670,6 +669,7 @@ def test_negative_validation_optout():
     msg = isctest.query.create("single-nsec3", "A")
     res = isctest.query.tcp(msg, "10.53.0.2")
     isctest.check.noerror(res)
+    isctest.check.has_authority(res)
     for rrset in res.authority:
         if (
             rrset.rdtype != rdatatype.NSEC3
@@ -1145,31 +1145,13 @@ def test_expired_signatures(ns4):
     res1 = isctest.query.tcp(msg, "10.53.0.4")
     msg = isctest.query.create("expiring.example", "SOA")
     res2 = isctest.query.tcp(msg, "10.53.0.4")
+    isctest.check.noerror(res1)
+    isctest.check.has_answer(res1)
+    isctest.check.noerror(res2)
+    isctest.check.has_answer(res2)
     for rrset in res1.answer:
         assert 240 <= rrset.ttl <= 300
     for rrset in res2.answer:
-        assert rrset.ttl <= 60
-
-    # test TTL is capped at RRSIG expiry time in the additional section (NS)
-    ns4.rndc("flush")
-    msg = isctest.query.create("expiring.example", "NS", cd=True)
-    res1 = isctest.query.tcp(msg, "10.53.0.4")
-    msg = isctest.query.create("expiring.example", "NS")
-    res2 = isctest.query.tcp(msg, "10.53.0.4")
-    for rrset in res1.additional:
-        assert 240 <= rrset.ttl <= 300
-    for rrset in res2.additional:
-        assert rrset.ttl <= 60
-
-    # test TTL is capped at RRSIG expiry time in the additional section (MX)
-    ns4.rndc("flush")
-    msg = isctest.query.create("expiring.example", "MX", cd=True)
-    res1 = isctest.query.tcp(msg, "10.53.0.4")
-    msg = isctest.query.create("expiring.example", "MX")
-    res2 = isctest.query.tcp(msg, "10.53.0.4")
-    for rrset in res1.additional:
-        assert 240 <= rrset.ttl <= 300
-    for rrset in res2.additional:
         assert rrset.ttl <= 60
 
 
@@ -1349,6 +1331,30 @@ def test_unknown_algorithms():
     isctest.check.noerror(res1)
     isctest.check.noerror(res2)
     isctest.check.noadflag(res2)
+
+
+def test_legacy_dnssec_types_are_signed():
+    """SIG (24), NXT (30) and KEY (25) records carry a covering RRSIG.
+
+    Per RFC 3755 SIG and NXT are obsolete and treated as opaque zone
+    data; KEY remains valid for SIG(0)/TKEY use.  All three are
+    ordinary zone data and must be signed like any other RRset.
+    """
+    for owner, rrtype in [
+        ("sigrr.secure.example", "SIG"),
+        ("nxtrr.secure.example", "NXT"),
+        ("keyrr.secure.example", "KEY"),
+    ]:
+        expected = rdatatype.from_text(rrtype)
+        msg = isctest.query.create(owner, rrtype, cd=True)
+        res = isctest.query.tcp(msg, "10.53.0.3")
+        isctest.check.noerror(res)
+        assert any(
+            rr.rdtype == expected for rr in res.answer
+        ), f"{rrtype} record missing in answer for {owner}: {res.answer}"
+        assert any(
+            rr.rdtype == rdatatype.RRSIG and rr.covers == expected for rr in res.answer
+        ), f"RRSIG({rrtype}) missing in answer for {owner}: {res.answer}"
 
 
 def test_rrsigs_for_glue():

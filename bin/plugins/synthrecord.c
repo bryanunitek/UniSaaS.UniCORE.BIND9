@@ -67,13 +67,13 @@ synthrecord_reverseanswer(synthrecord_t *inst, isc_netaddr_t *na,
 	REQUIRE(na->family == AF_INET || na->family == AF_INET6);
 
 	isc_buffer_init(&b, bdata, sizeof(bdata));
-	isc_buffer_copyregion(&b, &inst->prefix);
+	RETERR(isc_buffer_copyregion(&b, &inst->prefix));
 
 	isc_buffer_init(&addrb, addrbdata, sizeof(addrbdata));
 	RETERR(isc_netaddr_totext(na, &addrb));
 
 	/*
-	 * IDN compatibility, as an IPv6 begining or ending with `::` will be
+	 * IDN compatibility, as an IPv6 beginning or ending with `::` will be
 	 * converted into `--` and RFC5890 section 2.3.1 states that an IDN
 	 * label can't start or end with an hyphen.
 	 */
@@ -86,6 +86,9 @@ synthrecord_reverseanswer(synthrecord_t *inst, isc_netaddr_t *na,
 		 */
 		isc_buffer_peekuint8(&addrb, &c);
 		if (c == ':') {
+			if (isc_buffer_availablelength(&b) == 0) {
+				return ISC_R_NOSPACE;
+			}
 			isc_buffer_putuint8(&b, '0');
 		}
 
@@ -96,12 +99,15 @@ synthrecord_reverseanswer(synthrecord_t *inst, isc_netaddr_t *na,
 		isc_buffer_forward(&addrb, isc_buffer_usedlength(&addrb) - 1);
 		isc_buffer_peekuint8(&addrb, &c);
 		if (c == ':') {
+			if (isc_buffer_availablelength(&b) == 0) {
+				return ISC_R_NOSPACE;
+			}
 			isc_buffer_putuint8(&addrb, '0');
 		}
 	}
 
 	isc_buffer_usedregion(&addrb, &addrr);
-	isc_buffer_copyregion(&b, &addrr);
+	RETERR(isc_buffer_copyregion(&b, &addrr));
 
 	/*
 	 * Do not attempt to replace anything in the prefix
@@ -214,6 +220,13 @@ synthrecord_parseforward(synthrecord_t *inst, const dns_name_t *name,
 
 	isc_buffer_init(&b, bdata, sizeof(bdata));
 	dns_name_totext(&label, DNS_NAME_OMITFINALDOT, &b);
+
+	/*
+	 * Buffer is `DNS_NAME_FORMATSIZE` which is the maximum length of
+	 * `dns_name_totext()` can put in there, plus one byte which we're
+	 * setting here. So we know there is at least one remaining byte in the
+	 * buffer.
+	 */
 	isc_buffer_putuint8(&b, 0);
 	if (strncmp((const char *)inst->prefix.base, isc_buffer_base(&b),
 		    inst->prefix.length) != 0)
@@ -499,7 +512,8 @@ synthrecord_parseallowsynth(synthrecord_t *inst, const cfg_obj_t *cfg,
 	result = cfg_map_get(synthrecordcfg, "allow-synth", &obj);
 
 	if (result == ISC_R_NOTFOUND) {
-		return dns_acl_any(inst->mctx, &inst->allowedsynth);
+		dns_acl_any(inst->mctx, &inst->allowedsynth);
+		return ISC_R_SUCCESS;
 	}
 
 	if (result != ISC_R_SUCCESS) {
@@ -597,7 +611,6 @@ plugin_register(const char *parameters, const void *cfg, const char *cfgfile,
 	*instp = inst;
 
 	isc_mem_attach(mctx, &inst->mctx);
-	result = ISC_R_SUCCESS;
 	result = synthrecord_parseconfig(inst, parameters, cfg, cfgfile,
 					 cfgline, aclctx, ctx->origin);
 

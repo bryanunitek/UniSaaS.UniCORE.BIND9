@@ -87,6 +87,7 @@
 #include <dns/order.h>
 #include <dns/peer.h>
 #include <dns/private.h>
+#include <dns/rdata.h>
 #include <dns/rdataclass.h>
 #include <dns/rdatalist.h>
 #include <dns/rdataset.h>
@@ -169,6 +170,7 @@
 #define MAX_ADVERTISED_TIMEOUT UINT32_C(UINT16_MAX * 100)
 #define MIN_PRIMARIES_TIMEOUT  UINT32_C(2500)	/* 2.5 seconds */
 #define MAX_PRIMARIES_TIMEOUT  UINT32_C(120000) /* 2 minutes */
+#define MAX_REUSE_TIMEOUT      UINT32_C(120000) /* 2 minutes */
 
 /*%
  * Check an operation for failure.  Assumes that the function
@@ -617,9 +619,9 @@ ta_fromconfig(const cfg_obj_t *key, bool *initialp, const char **namestrp,
 	dns_rdata_t rdata = DNS_RDATA_INIT;
 	uint32_t rdata1, rdata2, rdata3;
 	const char *datastr = NULL, *namestr = NULL;
-	unsigned char data[4096];
+	unsigned char data[DNS_RDATA_MAXLENGTH];
 	isc_buffer_t databuf;
-	unsigned char rrdata[4096];
+	unsigned char rrdata[DNS_RDATA_MAXLENGTH];
 	isc_buffer_t rrdatabuf;
 	isc_region_t r;
 	dns_fixedname_t fname;
@@ -3527,9 +3529,8 @@ cleanup:
 }
 #endif /* HAVE_DNSTAP */
 
-static isc_result_t
+static void
 create_mapped_acl(void) {
-	isc_result_t result;
 	dns_acl_t *acl = NULL;
 	struct in6_addr in6 = IN6ADDR_V4MAPPED_INIT;
 	isc_netaddr_t addr;
@@ -3537,13 +3538,8 @@ create_mapped_acl(void) {
 	isc_netaddr_fromin6(&addr, &in6);
 
 	dns_acl_create(isc_g_mctx, 1, &acl);
-
-	result = dns_iptable_addprefix(acl->iptable, &addr, 96, true);
-	if (result == ISC_R_SUCCESS) {
-		dns_acl_attach(acl, &named_g_mapped);
-	}
-	dns_acl_detach(&acl);
-	return result;
+	dns_iptable_addprefix(acl->iptable, &addr, 96, RADIX_ALLOW);
+	named_g_mapped = acl;
 }
 
 isc_result_t
@@ -3683,6 +3679,51 @@ configure_max_cache_size(dns_view_t *view, const cfg_obj_t *maps[4]) {
 	} else {
 		UNREACHABLE();
 	}
+}
+
+static isc_result_t
+configure_view_delegdb(const cfg_obj_t **maps, dns_view_t *pview,
+		       dns_view_t *view, size_t cachesz) {
+	isc_result_t result;
+	const cfg_obj_t *obj;
+	uint32_t minttl, maxttl;
+
+	/*
+	 * The deleg DB cache is preserved if reconfiguring/reloading the
+	 * server.
+	 */
+	if (pview != NULL) {
+		dns_delegdb_attach(pview->deleg, &view->deleg);
+	} else {
+		dns_delegdb_create(&view->deleg);
+	}
+
+	obj = NULL;
+	result = named_config_get(maps, "min-delegation-ttl", &obj);
+	INSIST(result == ISC_R_SUCCESS);
+	minttl = cfg_obj_asduration(obj);
+
+	obj = NULL;
+	result = named_config_get(maps, "max-delegation-ttl", &obj);
+	INSIST(result == ISC_R_SUCCESS);
+	maxttl = cfg_obj_asduration(obj);
+
+	if (minttl != 0 && maxttl != 0 && minttl >= maxttl) {
+		isc_log_write(
+			NAMED_LOGCATEGORY_GENERAL, NAMED_LOGMODULE_SERVER,
+			ISC_LOG_ERROR,
+			"When 'min-delegation-ttl' and 'max-delegation-ttl' "
+			"are both positive, 'min-delegation-ttl' must be "
+			"strictly less than 'max-delegation-ttl'");
+		result = ISC_R_RANGE;
+	} else {
+		dns_delegdb_config_t config = { .dbsize = cachesz,
+						.minttl = minttl,
+						.maxttl = maxttl };
+		dns_delegdb_setconfig(view->deleg, &config);
+	}
+
+	return result;
 }
 
 static const char *const response_synonyms[] = { "response", NULL };
@@ -4032,7 +4073,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 							 mctx, 0, &excluded));
 			} else {
 				if (named_g_mapped == NULL) {
-					CHECK(create_mapped_acl());
+					create_mapped_acl();
 				}
 				dns_acl_attach(named_g_mapped, &excluded);
 			}
@@ -4326,22 +4367,14 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 				      dispatch4, dispatch6));
 
 	/*
-	 * The deleg DB cache is preserved if reconfiguring/reloading the
-	 * server.
+	 * Configure delegdb and detatch the previous viw which isn't needed
+	 * afterwards.
 	 */
-	if (pview != NULL) {
-		dns_delegdb_reuse(pview, view);
-	} else {
-		dns_delegdb_create(&view->deleg);
-	}
-	dns_delegdb_setsize(view->deleg, cache_size_slice);
-
-	/*
-	 * The previous view isn't needed anymore.
-	 */
+	result = configure_view_delegdb(maps, pview, view, cache_size_slice);
 	if (pview != NULL) {
 		dns_view_detach(&pview);
 	}
+	CHECK(result);
 
 	if (resstats == NULL) {
 		isc_stats_create(mctx, &resstats, dns_resstatscounter_max);
@@ -5804,10 +5837,26 @@ get_viewinfo(const cfg_obj_t *vconfig, const char **namep,
 		classobj = cfg_tuple_get(vconfig, "class");
 		CHECK(named_config_getclass(classobj, dns_rdataclass_in,
 					    &viewclass));
-		if (dns_rdataclass_ismeta(viewclass)) {
+		switch (viewclass) {
+		case dns_rdataclass_in:
+			break;
+		case dns_rdataclass_chaos:
+			/* allow the builtin _bind view */
+			if (strcmp(viewname, "_bind") != 0) {
+				isc_log_write(
+					NAMED_LOGCATEGORY_GENERAL,
+					NAMED_LOGMODULE_SERVER, ISC_LOG_ERROR,
+					"view '%s': only builtin _bind view is "
+					"allowed in Chaos (CH) class",
+					viewname);
+				CLEANUP(ISC_R_FAILURE);
+			}
+			break;
+		default:
 			isc_log_write(NAMED_LOGCATEGORY_GENERAL,
 				      NAMED_LOGMODULE_SERVER, ISC_LOG_ERROR,
-				      "view '%s': class must not be meta",
+				      "view '%s': only Internet (IN) class is "
+				      "allowed",
 				      viewname);
 			CLEANUP(ISC_R_FAILURE);
 		}
@@ -6391,7 +6440,7 @@ add_keydata_zone(dns_view_t *view, const char *directory, isc_mem_t *mctx) {
 
 	CHECK(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
 
-	CHECK(dns_acl_none(mctx, &none));
+	dns_acl_none(mctx, &none);
 	dns_zone_setqueryacl(zone, none);
 	dns_zone_setqueryonacl(zone, none);
 	dns_acl_detach(&none);
@@ -7705,7 +7754,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *bindkeys,
 	ns_altsecretlist_t altsecrets, tmpaltsecrets;
 	uint32_t softquota = 0;
 	uint32_t max;
-	uint64_t initial, idle, keepalive, advertised, primaries;
+	uint64_t initial, idle, keepalive, advertised, primaries, reuse;
 	bool loadbalancesockets;
 	bool exclusive = false;
 	dns_aclenv_t *env =
@@ -7982,11 +8031,25 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *bindkeys,
 		primaries = MIN_PRIMARIES_TIMEOUT;
 	}
 
+	obj = NULL;
+	result = named_config_get(maps, "tcp-reuse-timeout", &obj);
+	INSIST(result == ISC_R_SUCCESS);
+	reuse = cfg_obj_asuint32(obj) * 100;
+	if (reuse > MAX_REUSE_TIMEOUT) {
+		cfg_obj_log(obj, ISC_LOG_WARNING,
+			    "tcp-reuse-timeout value is out of range: "
+			    "lowering to %" PRIu32,
+			    MAX_REUSE_TIMEOUT / 100);
+		reuse = MAX_REUSE_TIMEOUT;
+	}
+
 	isc_nm_setinitialtimeout(initial);
 	isc_nm_setprimariestimeout(primaries);
 	isc_nm_setidletimeout(idle);
 	isc_nm_setkeepalivetimeout(keepalive);
 	isc_nm_setadvertisedtimeout(advertised);
+
+	dns_dispatchmgr_setreusetimeout(named_g_dispatchmgr, reuse);
 
 #define CAP_IF_NOT_ZERO(v, min, max) \
 	if (v > 0 && v < min) {      \
@@ -8786,7 +8849,7 @@ cleanup_portsets:
 cleanup_tls:
 	/*
 	 * Detach the TLS client context (whether the one created at the
-	 * begining of this function, or the previous running one)
+	 * beginning of this function, or the previous running one)
 	 */
 	isc_tlsctx_cache_detach(&tlsctx_client_cache);
 
@@ -11261,9 +11324,13 @@ cleanup:
 
 static void
 flush_delegdb(dns_view_t *view) {
-	dns_delegdb_shutdown(view->deleg);
+	REQUIRE(view->deleg != NULL);
+
+	dns_delegdb_config_t config = dns_delegdb_getconfig(view->deleg);
+
 	dns_delegdb_detach(&view->deleg);
 	dns_delegdb_create(&view->deleg);
+	dns_delegdb_setconfig(view->deleg, &config);
 }
 
 isc_result_t
@@ -11802,7 +11869,7 @@ named_server_sync(named_server_t *server, isc_lex_t *lex, isc_buffer_t *text) {
 		isc_log_write(NAMED_LOGCATEGORY_GENERAL, NAMED_LOGMODULE_SERVER,
 			      ISC_LOG_INFO, "dumping all zones%s: %s",
 			      cleanup ? ", removing journal files" : "",
-			      isc_result_totext(result));
+			      isc_result_totext(tresult));
 		return tresult;
 	}
 

@@ -3924,6 +3924,20 @@ system.
    option are expected to use TCP connections for more than one message.
    This value can be updated at runtime by using :option:`rndc tcp-timeouts`.
 
+.. namedconf:statement:: tcp-reuse-timeout
+   :tags: query
+   :short: Sets the amount of time (in milliseconds) that an idle outgoing TCP connection is kept open for reuse.
+
+   This sets the amount of time, in units of 100 milliseconds, that an idle
+   outgoing TCP or TLS connection opened by :iscman:`named` (for example, to a
+   forwarder or an authoritative server) is kept open after its last outstanding
+   response has completed, so that it can be reused by a later query instead of
+   being closed and reopened. The default is 50 (5 seconds), and the maximum is
+   1200 (two minutes). A value of 0 disables keeping idle outgoing TCP or TLS
+   connections open for reuse; it does not affect sharing of a connection while
+   queries are still outstanding. Values above the maximum are adjusted with a
+   logged warning.
+
 .. namedconf:statement:: tcp-advertised-timeout
    :tags: query
    :short: Sets the timeout value (in milliseconds) that the server sends in responses containing the EDNS TCP keepalive option.
@@ -4185,6 +4199,18 @@ Tuning
    exceed 90 seconds and is truncated to 90 seconds if set to a greater
    value.
 
+.. namedconf:statement:: min-delegation-ttl
+   :tags: server
+   :short: Configure the minimum time (in seconds) that the server caches delegations.
+
+   This sets the minimum time for which the server caches nameserver names and
+   glues for a delegation, in seconds. For convenience, TTL-style time-unit
+   suffixes may be used to specify the value. It also accepts ISO 8601 duration
+   formats.
+
+   Setting a value of ``0`` disable the minimum check TTL for delegations. The
+   default :any:`min-delegation-ttl` is ``60`` seconds.
+
 .. namedconf:statement:: max-delegation-servers
    :tags: server
    :short: Configure the maximum number of nameservers considered for a delegation
@@ -4244,6 +4270,18 @@ Tuning
    The default :any:`max-cache-ttl` is 604800 (one week). A value of zero may cause
    all queries to return SERVFAIL, because of lost caches of intermediate RRsets
    (such as NS and glue AAAA/A records) in the resolution process.
+
+.. namedconf:statement:: max-delegation-ttl
+   :tags: server
+   :short: Configure the maximum time (in seconds) that the server caches delegations.
+
+   This sets the maximum time for which the server caches nameserver names and
+   glues for a delegation, in seconds. For convenience, TTL-style time-unit
+   suffixes may be used to specify the value. It also accepts ISO 8601 duration
+   formats.
+
+   Setting a value of ``0`` disable the maximum TTL check for delegations. The
+   default :any:`max-delegation-ttl` is ``0``.
 
 .. namedconf:statement:: max-stale-ttl
    :tags: server
@@ -6742,9 +6780,8 @@ with that view. When no view-specific value is given, the value in the
 default values specified in the :any:`view` statement; these view-specific
 defaults take precedence over those in the :namedconf:ref:`options` statement.
 
-Views are class-specific. If no class is given, class IN is assumed.
-Note that all non-IN views must contain a hint zone, since only the IN
-class has compiled-in default hints.
+Only class IN can be used for the views.  If no class is given, class IN is
+assumed.
 
 If there are no :any:`view` statements in the config file, a default view
 that matches any client is automatically created in class IN. Any

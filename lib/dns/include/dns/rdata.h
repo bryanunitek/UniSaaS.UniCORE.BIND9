@@ -497,6 +497,7 @@ dns_rdata_tofmttext(dns_rdata_t *rdata, const dns_name_t *origin,
  * it is undefined and falls back to the default value of 'width'
  */
 
+ISC_ATTR_WARN_UNUSED_RESULT
 isc_result_t
 dns_rdata_fromstruct(dns_rdata_t *rdata, dns_rdataclass_t rdclass,
 		     dns_rdatatype_t type, void *source, isc_buffer_t *target);
@@ -720,20 +721,19 @@ dns_rdatatype_isknown(dns_rdatatype_t type) {
 
 /*%
  * Return true iff a query for the rdata type can have multiple
- * unrelated answers in a response: ANY, RRSIG, or SIG.
+ * unrelated answers in a response: ANY, or RRSIG.
  */
 static inline bool
 dns_rdatatype_ismulti(dns_rdatatype_t type) {
-	return type == dns_rdatatype_any || type == dns_rdatatype_rrsig ||
-	       type == dns_rdatatype_sig;
+	return type == dns_rdatatype_any || type == dns_rdatatype_rrsig;
 }
 
 /*%
- * Return true iff the rdata type is a signature: either RRSIG or SIG.
+ * Return true iff the rdata type is RRSIG.
  */
 static inline bool
 dns_rdatatype_issig(dns_rdatatype_t type) {
-	return type == dns_rdatatype_rrsig || type == dns_rdatatype_sig;
+	return type == dns_rdatatype_rrsig;
 }
 
 /*%

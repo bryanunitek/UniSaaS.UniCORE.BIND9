@@ -981,7 +981,7 @@ rdataset_settrust(dns_rdataset_t *rdataset, dns_trust_t trust) {
 	dns_vecheader_t *header = dns_vecheader_getheader(rdataset);
 
 	rdataset->trust = trust;
-	atomic_store(&header->trust, trust);
+	atomic_store_release(&header->trust, trust);
 }
 
 static void
@@ -1015,6 +1015,16 @@ rdataset_getownercase(const dns_rdataset_t *rdataset, dns_name_t *name) {
 dns_vecheader_t *
 dns_vecheader_getheader(const dns_rdataset_t *rdataset) {
 	return rdataset->vec.header;
+}
+
+dns_vecheader_t *
+dns_vecheader_moveheader(dns_rdataset_t *rdataset) {
+	dns_vecheader_t *header = MOVE_OWNERSHIP(rdataset->vec.header);
+	/*
+	 * We stole the header, it is safe to reset the rdataset.
+	 */
+	dns_rdataset_init(rdataset);
+	return header;
 }
 
 dns_vectop_t *

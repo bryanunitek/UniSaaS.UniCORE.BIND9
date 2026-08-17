@@ -1,4 +1,7 @@
 variables:
+  # The default timeout is 60 minutes. Set RUNNER_SCRIPT_TIMEOUT to 55m to
+  # leave room for the after_script timeout that defaults to 5m.
+  RUNNER_SCRIPT_TIMEOUT: 55m
   # Not normally needed, but may be if some script uses `apt-get install`.
   DEBIAN_FRONTEND: noninteractive
   # Locale settings do not affect the build, but might affect tests.
@@ -14,7 +17,6 @@ variables:
   GIT_COMMITTER_EMAIL: "$GIT_AUTHOR_EMAIL"
 
   CI_REGISTRY_IMAGE: registry.gitlab.isc.org/isc-projects/images/bind9
-  CCACHE_DIR: "/ccache"
 
   GIT_DEPTH: 1
   GIT_CLEAN_FLAGS: -ffdxq
@@ -100,6 +102,10 @@ workflow:
   # at the end of a prior rebase job belonging to the same resource group.
   auto_cancel:
     on_new_commit: interruptible
+
+include:
+  - project: 'isc-projects/bind9-qa'
+    file: '/.gitlab-ci-common.yml'
 
 stages:
   - quick-checks
@@ -192,8 +198,8 @@ stages:
 
 # Alpine Linux
 
-.alpine-3.23-amd64: &alpine_3_23_amd64_image
-  image: "$CI_REGISTRY_IMAGE:alpine-3.23-amd64"
+.alpine-3.24-amd64: &alpine_3_24_amd64_image
+  image: "$CI_REGISTRY_IMAGE:alpine-3.24-amd64"
   <<: *linux_amd64
 
 # AlmaLinux
@@ -228,6 +234,10 @@ stages:
   image: "$CI_REGISTRY_IMAGE:debian-trixie-amd64cross32"
   <<: *linux_amd64
 
+.debian-trixie-386: &debian_trixie_386_image
+  image: "$CI_REGISTRY_IMAGE:debian-trixie-386"
+  <<: *linux_amd64
+
 .debian-sid-amd64: &debian_sid_amd64_image
   image: "$CI_REGISTRY_IMAGE:debian-sid-amd64"
   <<: *linux_amd64
@@ -240,16 +250,16 @@ stages:
 
 # Fedora
 
-.tsan-fedora-43-amd64: &tsan_fedora_43_amd64_image
-  image: "$CI_REGISTRY_IMAGE:tsan-fedora-43-amd64"
+.tsan-fedora-44-amd64: &tsan_fedora_44_amd64_image
+  image: "$CI_REGISTRY_IMAGE:tsan-fedora-44-amd64"
   <<: *linux_amd64
 
-.fedora-43-amd64: &fedora_43_amd64_image
-  image: "$CI_REGISTRY_IMAGE:fedora-43-amd64"
+.fedora-44-amd64: &fedora_44_amd64_image
+  image: "$CI_REGISTRY_IMAGE:fedora-44-amd64"
   <<: *linux_amd64
 
-.fedora-43-arm64: &fedora_43_arm64_image
-  image: "$CI_REGISTRY_IMAGE:fedora-43-arm64"
+.fedora-44-arm64: &fedora_44_arm64_image
+  image: "$CI_REGISTRY_IMAGE:fedora-44-arm64"
   <<: *linux_arm64
 
 # Ubuntu
@@ -260,6 +270,10 @@ stages:
 
 .ubuntu-noble-amd64: &ubuntu_noble_amd64_image
   image: "$CI_REGISTRY_IMAGE:ubuntu-noble-amd64"
+  <<: *linux_amd64
+
+.ubuntu-resolute-amd64: &ubuntu_resolute_amd64_image
+  image: "$CI_REGISTRY_IMAGE:ubuntu-resolute-amd64"
   <<: *linux_amd64
 
 # Base image
@@ -305,8 +319,14 @@ stages:
 .rule_tag_open_source: &rule_tag_open_source
   - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG !~ /-S/'
 
+.rule_tag_open_source_stable: &rule_tag_open_source_stable
+  - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG =~ $STABLE_VERSION_REGEX'
+
 .rule_tag_open_source_maintenance: &rule_tag_open_source_maintenance
   - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG !~ /-S/ && $RELEASE_TYPE != "security"'
+
+.rule_tag_open_source_security: &rule_tag_open_source_security
+  - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG !~ /-S/ && $RELEASE_TYPE == "security"'
 
 .rule_tag_security: &rule_tag_security
   - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_COMMIT_TAG != null && $RELEASE_TYPE == "security"'
@@ -320,8 +340,8 @@ stages:
 .rule_source_all: &rule_source_all
   - if: '$CI_PIPELINE_SOURCE =~ /^(api|merge_request_event|pipeline|schedule|trigger|web)$/ && $REBASE_ONLY != "1"'
 
-.rule_private_security_branch: &rule_private_security_branch
-  - if: '$CI_COMMIT_BRANCH =~ /^security-(main|bind-9\.[1-9][0-9])$/ && $CI_PROJECT_PATH == "isc-private/bind9" && $REBASE_ONLY != "1"'
+.rule_branch_after_autorebase: &rule_branch_after_autorebase
+  - if: '$CI_PIPELINE_SOURCE == "push" && $AUTOREBASED == "1"'
 
 .api-pipelines-schedules-tags-triggers-web-triggering-rules: &api_pipelines_schedules_tags_triggers_web_triggering_rules
   rules:
@@ -331,7 +351,7 @@ stages:
 .default-triggering-rules_list: &default_triggering_rules_list
   - *rule_tag
   - *rule_source_all
-  - *rule_private_security_branch
+  - *rule_branch_after_autorebase
 
 .default-triggering-rules: &default_triggering_rules
   rules:
@@ -343,7 +363,7 @@ stages:
     - *rule_mr_manual
     - *rule_tag
     - *rule_source_other_than_mr
-    - *rule_private_security_branch
+    - *rule_branch_after_autorebase
 
 .shell-triggering-rules: &shell_triggering_rules
   rules:
@@ -351,7 +371,7 @@ stages:
     - *rule_mr_manual
     - *rule_tag
     - *rule_source_other_than_mr
-    - *rule_private_security_branch
+    - *rule_branch_after_autorebase
 
 .python-triggering-rules: &python_triggering_rules
   rules:
@@ -359,7 +379,7 @@ stages:
     - *rule_mr_manual
     - *rule_tag
     - *rule_source_other_than_mr
-    - *rule_private_security_branch
+    - *rule_branch_after_autorebase
 
 .extra-system-tests-triggering-rules: &extra_system_tests_triggering_rules
   rules:
@@ -409,11 +429,14 @@ stages:
     - find -name 'tsan.*' -exec "$PYTHON" "$CI_PROJECT_DIR"/bind9-qa/ci/parse_tsan.py {} \;
 
 .check_readline_setup: &check_readline_setup
-    - if [[ -n "${WITHOUT_LIBEDIT}" ]]; then
-        ! grep "^#define HAVE_LIBEDIT" build/config.h;
-      elif [[ -n "${WITH_LIBEDIT}" ]]; then
-        grep -e "^#define HAVE_LIBEDIT" build/config.h;
-      fi
+    # WITH_LIBEDIT/WITHOUT_LIBEDIT are always-set global variables, so inspect
+    # the actual per-job configure flags to decide what to assert.
+    - case " ${EXTRA_CONFIGURE} " in
+        *" -Dline=disabled "*)
+          ! grep -e "^#define HAVE_LIBEDIT" build/config.h;;
+        *" -Dline=enabled "*)
+          grep -e "^#define HAVE_LIBEDIT" build/config.h;;
+      esac
 
 .list_installed_package_versions: &list_installed_package_versions
   - echo -e "\e[0Ksection_start:`date +%s`:installed_packages_section[collapsed=true]\r\e[0KHeader of the installed packages collapsible section"
@@ -443,14 +466,12 @@ stages:
   <<: *default_triggering_rules
   stage: build
   before_script:
-    - test -w "${CCACHE_DIR}" && export PATH="/usr/lib/ccache:${PATH}"
     - *list_installed_package_versions
   script:
     - *configure
     - *check_readline_setup
     - meson compile -C build
     - meson compile -C build system-test-dependencies
-    - ninja -C build meson-test-prereq
     - test -z "${RUN_MESON_INSTALL}" || meson install -C build --destdir=$INSTALL_PATH
     - test -z "${RUN_MESON_INSTALL}" || DESTDIR="${INSTALL_PATH}" sh build/util/check-make-install.sh
     #- test -z "${CROSS_COMPILATION}" || grep -F -A 1 "checking whether we are cross compiling" config.log | grep -q "result.*yes"
@@ -496,6 +517,9 @@ stages:
         SHOTGUN_ROUNDS: 5
       when: manual
       allow_failure: true
+  timeout: 2h
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 1h55m
   script:
     - if [ -n "$WEEKDAY" ] && [ "$(date +%w)" != "$WEEKDAY" ]; then exit 0; fi  # if WEEKDAY is set, only run on those days
     - if [ -z "$BASELINE" ]; then export BASELINE=$BIND_BASELINE_VERSION; fi  # this dotenv variable can't be set in the rules section, because rules are evaluated before any jobs run
@@ -524,7 +548,6 @@ stages:
   needs:
     - job: ci-variables
       artifacts: true
-  timeout: 2h
 
 .system_test_common: &system_test_job
   <<: *default_triggering_rules
@@ -593,10 +616,17 @@ stages:
     - export CMOCKA_XML_FILE="$(pwd)/build/meson-logs/include-cmocka-%g.junit.xml"
     - RET=0
     - MESON_WRAPPER="$CI_PROJECT_DIR/bind9-qa/ci/meson_retry_if_flaky.sh 2"
+    # When Git checks out the sources, their modification times are newer than
+    # the build tree from the artifact, so meson would rebuild all of BIND 9.
+    # Age the tracked sources (not "build", to keep ninja's recorded mtimes) so
+    # only the unit tests get built.  "-r" skips the tarball job, which runs
+    # from an untracked dir.  Use BIND 9's git-birthday as the timestamp.
+    - git ls-files -z | xargs -0 -r touch -t 199808172205
+    # Build the test binaries here (rather than in the build job) and run them.
     # CMocka tests: Mark Meson-generated XMLs to exclude them later with --logbase, CMocka generates better ones.
-    - meson test -C build --suite cmocka --wrapper "$MESON_WRAPPER" --no-rebuild --logbase "exclude-" || RET=1
+    - meson test -C build --suite cmocka --wrapper "$MESON_WRAPPER" --logbase "exclude-" || RET=1
     # Non-CMocka test: Use Meson-generated XMLs.
-    - meson test -C build --no-suite cmocka --wrapper "$MESON_WRAPPER" --no-rebuild --logbase "include-" || RET=1
+    - meson test -C build --no-suite cmocka --wrapper "$MESON_WRAPPER" --logbase "include-" || RET=1
     - >
       "$PYTHON" "$CI_PROJECT_DIR"/bind9-qa/ci/postprocess_junit_files.py build/meson-logs/include-*.junit.xml --output "$CI_PROJECT_DIR/junit.xml"
     - (exit $RET)
@@ -633,6 +663,11 @@ stages:
     - *setup_interfaces
     - *git_clone_bind9-qa
     - cd "$CI_PROJECT_DIR"/bind9-qa/respdiff
+  after_script:
+    - *parse_tsan
+    - cd "$CI_PROJECT_DIR"/bind9-qa/respdiff
+    - if [ ! -e rspworkdir/report.json ]; then respdiff/msgdiff.py --config rspworkdir/respdiff.cfg rspworkdir; fi
+    - if [ ! -e rspworkdir/report.txt ]; then respdiff/diffsum.py --config rspworkdir/respdiff.cfg --limit 0 rspworkdir | tee rspworkdir/report.txt; fi
   needs: []
   artifacts:
     paths:
@@ -654,6 +689,9 @@ misc:
     - sh util/check-gitignore.sh
     - sh util/check-trailing-whitespace.sh
     - bash util/unused-headers.sh
+    # Check that every rdata source file is registered for header generation
+    - meson setup build
+    - bash util/check-rdata-registration.sh build
     # Check dangling symlinks in the repository
     - if find . -xtype l | grep .; then exit 1; fi
     - muon-meson analyze -Werror
@@ -716,7 +754,7 @@ clang-format:
     - *rule_mr_manual
     - *rule_tag
     - *rule_source_other_than_mr
-    - *rule_private_security_branch
+    - *rule_branch_after_autorebase
   script:
     - if [ -r .clang-format ]; then "${CLANG_FORMAT}" -i -style=file $(git ls-files '*.c' '*.h'); fi
     - git diff > clang-format.patch
@@ -736,6 +774,7 @@ meson-format:
     - *rule_mr_manual
     - *rule_tag
     - *rule_source_other_than_mr
+    - *rule_branch_after_autorebase
   script:
     - git ls-files "*meson.build" | xargs muon-meson fmt -i
     - git diff > meson-format.patch
@@ -745,10 +784,6 @@ meson-format:
       - meson-format.patch
     expire_in: "1 week"
     when: on_failure
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - "**/meson.build"
 
 doctest:
   <<: *quick_checks_job
@@ -878,7 +913,7 @@ coccinelle:
     - *rule_mr_manual
     - *rule_tag
     - *rule_source_other_than_mr
-    - *rule_private_security_branch
+    - *rule_branch_after_autorebase
   script:
     - util/check-cocci.sh
     - if test "$(git status --porcelain | grep -Ev '\?\?' | wc -l)" -gt "0"; then git status --short; exit 1; fi
@@ -958,7 +993,7 @@ coverity:
 # Simple reproductibilty test, needs an image with meson >=1.6.0
 reproducible-build:
   <<: *other_checks_job
-  <<: *alpine_3_23_amd64_image
+  <<: *alpine_3_24_amd64_image
   variables:
     CC: gcc
     CFLAGS: "${CFLAGS_COMMON}"
@@ -966,14 +1001,11 @@ reproducible-build:
     - *list_installed_package_versions
   script:
     # dnstap produces an intermediate .a file, and meson considers all .a
-    # files to be final results independently of whether they are installed or
-    # not. But the content of the .a file might be unstable under LTO due to
-    # -ffat-lto-objects. Hence we disable dnstap for reproducibility tests.
-    - meson reprotest
-      --
-      -Ddnstap=disabled
-      -Ddoc=disabled
-      -Doptimization=1
+    # files to be final results independently of whether they are installed
+    # or not. But the content of the .a file is unstable under LTO because
+    # -ffat-lto-objects embeds non-deterministic GIMPLE bytecode. Hence we
+    # disable dnstap for reproducibility tests.
+    - meson reprotest -- -Ddnstap=disabled
   artifacts:
     untracked: true
     when: on_failure
@@ -1105,29 +1137,30 @@ cross-version-config-tests:
     untracked: true
     expire_in: "1 day"
     when: always
+  allow_failure: true # !12163, commit 9771df0a
 
-# Jobs for regular GCC builds on Alpine Linux 3.23 (amd64)
+# Jobs for regular GCC builds on Alpine Linux 3.24 (amd64)
 
-gcc:alpine3.23:amd64:
+gcc:alpine3.24:amd64:
   variables:
     CC: gcc
     CFLAGS: "${CFLAGS_COMMON}"
     EXTRA_CONFIGURE: "${WITHOUT_LIBEDIT}"
-  <<: *alpine_3_23_amd64_image
+  <<: *alpine_3_24_amd64_image
   <<: *build_job
 
-system:gcc:alpine3.23:amd64:
-  <<: *alpine_3_23_amd64_image
+system:gcc:alpine3.24:amd64:
+  <<: *alpine_3_24_amd64_image
   <<: *system_test_job
   needs:
-    - job: gcc:alpine3.23:amd64
+    - job: gcc:alpine3.24:amd64
       artifacts: true
 
-unit:gcc:alpine3.23:amd64:
-  <<: *alpine_3_23_amd64_image
+unit:gcc:alpine3.24:amd64:
+  <<: *alpine_3_24_amd64_image
   <<: *unit_test_job
   needs:
-    - job: gcc:alpine3.23:amd64
+    - job: gcc:alpine3.24:amd64
       artifacts: true
 
 # Jobs for regular GCC builds on Alma Linux 8 (amd64)
@@ -1406,6 +1439,30 @@ gcc:trixie:amd64cross32:
   <<: *debian_trixie_amd64cross32_image
   <<: *build_job
 
+# Jobs for regular GCC builds on Debian 13 "trixie" (386)
+
+gcc:trixie:386:
+  variables:
+    CC: gcc
+    CFLAGS: "${CFLAGS_COMMON}"
+    EXTRA_CONFIGURE: "-Didn=enabled"
+  <<: *debian_trixie_386_image
+  <<: *build_job
+
+system:gcc:trixie:386:
+  <<: *debian_trixie_386_image
+  <<: *system_test_job
+  needs:
+    - job: gcc:trixie:386
+      artifacts: true
+
+unit:gcc:trixie:386:
+  <<: *debian_trixie_386_image
+  <<: *unit_test_job
+  needs:
+    - job: gcc:trixie:386
+      artifacts: true
+
 # Run with pkcs11-provider tests
 gcc:ossl3:trixie:amd64:
   <<: *debian_trixie_amd64_image
@@ -1429,6 +1486,10 @@ system:gcc:ossl3:trixie:amd64:
       artifacts: true
 
 unit:gcc:ossl3:amd64:
+  # Set up environment variables to run unit tests with PKCS#11-aware OpenSSL
+  variables:
+    OPENSSL_CONF: "/var/tmp/etc/openssl-provider.cnf"
+    SOFTHSM2_CONF: "/var/tmp/softhsm2/softhsm2.conf"
   <<: *debian_trixie_amd64_image
   <<: *unit_test_job
   needs:
@@ -1569,29 +1630,54 @@ system:gcc:noble:amd64:
 unit:gcc:noble:amd64:
   <<: *ubuntu_noble_amd64_image
   <<: *unit_test_job
+  <<: *api_pipelines_schedules_tags_triggers_web_triggering_rules
   needs:
     - job: gcc:noble:amd64
       artifacts: true
 
-# Jobs for ASAN builds on Fedora 43 (amd64)
+# Jobs for regular GCC builds on Ubuntu 26.04 Resolute Raccoon (amd64)
+
+gcc:resolute:amd64:
+  variables:
+    CC: gcc
+    CFLAGS: "${CFLAGS_COMMON}"
+    EXTRA_CONFIGURE: "-Didn=enabled"
+  <<: *ubuntu_resolute_amd64_image
+  <<: *build_job
+
+system:gcc:resolute:amd64:
+  <<: *ubuntu_resolute_amd64_image
+  <<: *system_test_job
+  needs:
+    - job: gcc:resolute:amd64
+      artifacts: true
+
+unit:gcc:resolute:amd64:
+  <<: *ubuntu_resolute_amd64_image
+  <<: *unit_test_job
+  needs:
+    - job: gcc:resolute:amd64
+      artifacts: true
+
+# Jobs for ASAN builds on Fedora 44 (amd64)
 
 gcc:asan:
   variables:
     CC: gcc
     CFLAGS: "${CFLAGS_COMMON}"
     EXTRA_CONFIGURE: "-Db_sanitize=address,undefined -Didn=enabled -Djemalloc=disabled -Dtracing=disabled"
-  <<: *fedora_43_amd64_image
+  <<: *fedora_44_amd64_image
   <<: *build_job
 
 system:gcc:asan:
-  <<: *fedora_43_amd64_image
+  <<: *fedora_44_amd64_image
   <<: *system_test_job
   needs:
     - job: gcc:asan
       artifacts: true
 
 unit:gcc:asan:
-  <<: *fedora_43_amd64_image
+  <<: *fedora_44_amd64_image
   <<: *unit_test_job
   needs:
     - job: gcc:asan
@@ -1621,7 +1707,7 @@ unit:clang:asan:
     - job: clang:asan
       artifacts: true
 
-# Jobs for TSAN builds on Fedora 43 (amd64)
+# Jobs for TSAN builds on Fedora 44 (amd64)
 
 gcc:tsan:
   variables:
@@ -1629,12 +1715,13 @@ gcc:tsan:
     CFLAGS: "${CFLAGS_COMMON} -Wno-stringop-overread"
     LDFLAGS: "-Wl,--disable-new-dtags"
     EXTRA_CONFIGURE: "${TSAN_CONFIGURE_FLAGS_COMMON}"
-  <<: *tsan_fedora_43_amd64_image
+  <<: *tsan_fedora_44_amd64_image
   <<: *build_job
 
 system:gcc:tsan:
   variables:
-  <<: *tsan_fedora_43_amd64_image
+    TSAN_SYMBOLIZER_PATH: "${TSAN_SYMBOLIZER_PATH_FEDORA}"
+  <<: *tsan_fedora_44_amd64_image
   <<: *system_test_tsan_job
   <<: *extra_system_tests_triggering_rules
   needs:
@@ -1644,7 +1731,7 @@ system:gcc:tsan:
 unit:gcc:tsan:
   variables:
     TSAN_SYMBOLIZER_PATH: "${TSAN_SYMBOLIZER_PATH_FEDORA}"
-  <<: *tsan_fedora_43_amd64_image
+  <<: *tsan_fedora_44_amd64_image
   <<: *unit_test_tsan_job
   <<: *api_pipelines_schedules_tags_triggers_web_triggering_rules
   needs:
@@ -1659,7 +1746,6 @@ clang:tsan:
     CFLAGS: "${CFLAGS_COMMON}"
     LDFLAGS: "-Wl,--disable-new-dtags"
     EXTRA_CONFIGURE: "${TSAN_CONFIGURE_FLAGS_COMMON} -Db_lundef=false --native-file ci/clang-trixie.ini"
-  <<: *build_job
 
 system:clang:tsan:
   variables:
@@ -1682,6 +1768,13 @@ unit:clang:tsan:
 tsan:stress:
   <<: *default_triggering_rules
   stage: system
+  # In a downstream pipeline, yaml variables inherited from the parent outrank
+  # the child's job-level `variables:` block. Inherit only what the child
+  # actually needs (image lookup), so the parent's RUNNER_SCRIPT_TIMEOUT does
+  # not override the per-job values set in the generated child config.
+  inherit:
+    variables:
+      - CI_REGISTRY_IMAGE
   variables:
     PARENT_PIPELINE_ID: $CI_PIPELINE_ID
   trigger:
@@ -2028,7 +2121,7 @@ publish-cleanup:
   tags:
     - smalljob
   rules:
-    - *rule_tag_security
+    - *rule_tag_open_source_security
 
 .manual_release_job_qa: &manual_release_job_qa
   <<: *manual_release_job
@@ -2048,6 +2141,8 @@ assign-milestones:
   needs:
     - job: sign
       artifacts: false
+  variables:
+    GIT_DEPTH: 1000
   script:
     - |
       "${CI_PROJECT_DIR}"/bind9-qa/releng/assign_mrs_to_versioned_milestones.py --version "${CI_COMMIT_TAG}" --metadata "${CI_PROJECT_DIR}"/bind9-qa/releng/metadata.json
@@ -2056,8 +2151,16 @@ assign-milestones:
 
 # Jobs to update RPMs
 
-.rpm-build-job: &rpm_build_job
+.rpm-build-job-common: &rpm_build_job_common
   <<: *manual_release_job_qa
+  # prevent Git push races between pipelines started for different tags
+  resource_group: "rpm-build-${SERVICE}"
+  after_script:
+    - git -C bind/ remote get-url origin | sed "s|\.git$|/-/commit/$(cat commit.txt)|"
+    - git -C bind/ show --color "$(cat commit.txt)" | sed "s|^$| |"
+
+.rpm-build-job: &rpm_build_job
+  <<: *rpm_build_job_common
   needs:
     - job: publish
       artifacts: false
@@ -2066,7 +2169,7 @@ assign-milestones:
       "${CI_PROJECT_DIR}"/bind9-qa/releng/update_rpms.py build --service "${SERVICE}" --version "${CI_COMMIT_TAG}"
 
 .rpm-build-job-private: &rpm_build_job_private
-  <<: *manual_release_job_qa
+  <<: *rpm_build_job_common
   needs:
     - job: publish-private
       artifacts: true
@@ -2143,8 +2246,6 @@ rpms-copr:
 # autodetected ones.
 .printing_press_job: &printing_press_job
   <<: *manual_release_job_qa
-  variables:
-    GIT_DEPTH: 1
   script:
     - >
       "$CI_PROJECT_DIR"/bind9-qa/releng/printing_press_mr.py --document "${DOCUMENT}" --metadata "$CI_PROJECT_DIR"/bind9-qa/releng/metadata.json ${FORCE_CVE_IDS:+--force-cve-ids ${FORCE_CVE_IDS}} ${FORCE_SECURITY_RELEASES:+--force-security-releases ${FORCE_SECURITY_RELEASES}}
@@ -2173,9 +2274,10 @@ update-docker-image:
     - git commit -m "Version bump to ${VERSION}" Dockerfile
     - git push
     - COMMIT_SHA="$(git log -n1 --format=%H)"
-    - MSG="Docker image for BIND ${BRANCH} updated to version ${CI_COMMIT_TAG}, commit [${COMMIT_SHA}](${DOCKER_PROJECT}/-/commit/${COMMIT_SHA})"
-    - |
-      curl -s -o /dev/null -X POST -H "Content-Type: application/json" -d '{"channel": "packaging", "text": "'"${MSG}"'"}' "${MATTERMOST_WEBHOOK_URL}"
+    - *git_clone_bind9-qa
+    - echo "Docker image for BIND ${BRANCH} updated to version ${CI_COMMIT_TAG}, commit [${COMMIT_SHA}](${DOCKER_PROJECT}/-/commit/${COMMIT_SHA})" > message.txt
+    - >
+      "$CI_PROJECT_DIR"/bind9-qa/releng/message_zulip.py --message message.txt --channel bind9 --topic Packaging
   needs:
     - job: release
       artifacts: true
@@ -2195,7 +2297,7 @@ prepare-release-announcement:
   rules:
     - *rule_tag_open_source
   after_script:
-    - if [ "${CI_JOB_STATUS}" = "success" ]; then "$CI_PROJECT_DIR"/bind9-qa/releng/send_release_links.py --metadata "$CI_PROJECT_DIR"/bind9-qa/releng/metadata.json --message-mattermost; fi
+    - if [ "${CI_JOB_STATUS}" = "success" ]; then "$CI_PROJECT_DIR"/bind9-qa/releng/send_release_links.py --metadata "$CI_PROJECT_DIR"/bind9-qa/releng/metadata.json --message-zulip; fi
 
 # Job preparing an EVN MR in Printing Press
 
@@ -2260,8 +2362,6 @@ merge-tag:
 
 update-stable-tag:
   <<: *manual_release_job_qa
-  variables:
-    GIT_DEPTH: 1
   needs:
     # TODO: if necessary, update job name after pushing tags from within CI is implemented
     - job: publish
@@ -2275,7 +2375,7 @@ update-stable-tag:
     - >
       "$CI_PROJECT_DIR"/bind9-qa/releng/update_stable_tag.py --tag "$CI_COMMIT_TAG"
   rules:
-    - *rule_tag_open_source
+    - *rule_tag_open_source_stable
   artifacts:
     paths:
       - bind9/
@@ -2335,7 +2435,7 @@ respdiff:
     EXTRA_CONFIGURE: "-Doptimization=g"
     MAX_DISAGREEMENTS_PERCENTAGE: "0.3"
   script:
-    - bash respdiff.sh -m /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" "${CI_PROJECT_DIR}" "/usr/local/respdiff-reference-bind/sbin/named"
+    - bash respdiff.sh -m /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" -r "${PWD}/respdiff" "${CI_PROJECT_DIR}" "/usr/local/respdiff-reference-bind/sbin/named"
     - cd ../.. && ninja -C build clean >/dev/null 2>&1
 
 respdiff:asan:
@@ -2347,7 +2447,7 @@ respdiff:asan:
     EXTRA_CONFIGURE: "-Doptimization=g -Db_sanitize=address,undefined -Djemalloc=disabled"
     MAX_DISAGREEMENTS_PERCENTAGE: "0.3"
   script:
-    - bash respdiff.sh -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" "${CI_PROJECT_DIR}" "/usr/local/respdiff-reference-bind/sbin/named"
+    - bash respdiff.sh -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" -r "${PWD}/respdiff" "${CI_PROJECT_DIR}" "/usr/local/respdiff-reference-bind/sbin/named"
     - cd ../.. && ninja -C build clean >/dev/null 2>&1
 
 respdiff:tsan:
@@ -2361,10 +2461,8 @@ respdiff:tsan:
     MAX_DISAGREEMENTS_PERCENTAGE: "0.3"
     TSAN_SYMBOLIZER_PATH: "${TSAN_SYMBOLIZER_PATH_DEBIAN}"
   script:
-    - bash respdiff.sh -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" "${CI_PROJECT_DIR}" "/usr/local/respdiff-reference-bind/sbin/named"
+    - bash respdiff.sh -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" -r "${PWD}/respdiff" "${CI_PROJECT_DIR}" "/usr/local/respdiff-reference-bind/sbin/named"
     - cd ../.. && ninja -C build clean >/dev/null 2>&1
-  after_script:
-    - *parse_tsan
 
 respdiff-third-party:
   <<: *respdiff_job
@@ -2373,9 +2471,9 @@ respdiff-third-party:
     CC: gcc
     CFLAGS: "${CFLAGS_COMMON}"
     EXTRA_CONFIGURE: "-Doptimization=g"
-    MAX_DISAGREEMENTS_PERCENTAGE: "0.4"
+    MAX_DISAGREEMENTS_PERCENTAGE: "0.5"
   script:
-    - bash respdiff.sh -s third_party -q "${PWD}/100k_mixed.txt" -c 1 -w "${PWD}/rspworkdir" "${CI_PROJECT_DIR}"
+    - bash respdiff.sh -s third_party -q "${PWD}/100k_mixed.txt" -c 1 -w "${PWD}/rspworkdir" -r "${PWD}/respdiff" "${CI_PROJECT_DIR}"
     - cd ../.. && ninja -C build clean >/dev/null 2>&1
 
 .respdiff-recent-named: &respdiff_recent_named
@@ -2393,7 +2491,7 @@ respdiff-third-party:
     - *configure
     - meson compile -C build
     - cd "$CI_PROJECT_DIR"/bind9-qa/respdiff
-    - bash respdiff.sh -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" "${CI_PROJECT_DIR}" "${CI_PROJECT_DIR}/baseline-build/build/named"
+    - bash respdiff.sh -s named -q "${PWD}/100k_mixed.txt" -c 3 -w "${PWD}/rspworkdir" -r "${PWD}/respdiff" "${CI_PROJECT_DIR}" "${CI_PROJECT_DIR}/baseline-build/build/named"
 
 respdiff:recent-named:
   <<: *respdiff_recent_named
@@ -2401,7 +2499,7 @@ respdiff:recent-named:
     CC: gcc
     CFLAGS: "${CFLAGS_COMMON} -DISC_TRACK_PTHREADS_OBJECTS"
     EXTRA_CONFIGURE: "-Doptimization=g"
-    MAX_DISAGREEMENTS_PERCENTAGE: "0.1"
+    MAX_DISAGREEMENTS_PERCENTAGE: "0.15"
 
 # Performance tests
 
@@ -2433,6 +2531,13 @@ shotgun:doh-get:
 stress-test-child-pipeline:
   <<: *default_triggering_rules
   stage: performance
+  # In a downstream pipeline, yaml variables inherited from the parent outrank
+  # the child's job-level `variables:` block. Inherit only what the child
+  # actually needs (image lookup), so the parent's RUNNER_SCRIPT_TIMEOUT does
+  # not override the per-job values set in the generated child config.
+  inherit:
+    variables:
+      - CI_REGISTRY_IMAGE
   rules:
     - if: '$CI_MERGE_REQUEST_DIFF_BASE_SHA != null'
       changes:
@@ -2443,7 +2548,7 @@ stress-test-child-pipeline:
       allow_failure: true
     - *rule_tag
     - if: '$CI_PIPELINE_SOURCE =~ /^(api|pipeline|schedule|trigger|web)$/ && $REBASE_ONLY != "1"'
-    - *rule_private_security_branch
+    - *rule_branch_after_autorebase
   trigger:
     include:
       - artifact: stress-test-configs.yml
@@ -2520,8 +2625,7 @@ pairwise:
 backports:
   <<: *post_merge
   rules:
-    # -sub branches are handled manually
-    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_REF_NAME =~ /^bind-9.[0-9]+$/ || $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH)'
+    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_REF_NAME =~ /^security-(main|bind-9\.[0-9]+)$/ || $CI_COMMIT_REF_NAME =~ /^bind-9\.[0-9]+$/ || $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH)'
   script:
     # CI job token is not sufficient for push operations
     - git remote get-url origin | sed -e "s/gitlab-ci-token:$CI_JOB_TOKEN/oauth2:$BIND_TEAM_WRITE_TOKEN/" | xargs git remote set-url --push origin
@@ -2531,7 +2635,7 @@ backports:
 merged-metadata:
   <<: *post_merge
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_REF_NAME =~ /^bind-9.[0-9]+(-sub)?$/ || $CI_COMMIT_REF_NAME =~ /^v9.[0-9]+.[0-9]+-release$/ || $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH)'
+    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_REF_NAME =~ /^security-(main|bind-9\.[0-9]+)$/ || $CI_COMMIT_REF_NAME =~ /^bind-9\.[0-9]+(-sub)?$/ || $CI_COMMIT_REF_NAME =~ /^v9\.[0-9]+\.[0-9]+-release$/ || $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH)'
   script:
     - >
       "$CI_PROJECT_DIR"/bind9-qa/releng/after_merge.py "$CI_PROJECT_ID" "$MERGE_REQUEST_ID"
@@ -2556,26 +2660,40 @@ merged-metadata:
   script:
     # CI job token is not sufficient for push operations
     - git remote get-url origin | sed -e "s/gitlab-ci-token:${CI_JOB_TOKEN}/oauth2:${BIND_TEAM_WRITE_TOKEN}/" | xargs git remote set-url --push origin
-    - git remote add base-project "https://oauth2:${BIND_TEAM_API_TOKEN}@gitlab.isc.org/${BASE_PROJECT}.git"
-    - git fetch --depth=1000 base-project "${BASE_COMMIT}"
-    - git rebase --rebase-merges "${BASE_COMMIT}"
+    - git remote add base-project "${CI_SERVER_URL}/${BASE_PROJECT}.git"
+    - git fetch --depth="${GIT_DEPTH}" base-project "${BASE_COMMIT}"
+    # If this branch has no changes compared to its base branch yet, there is nothing to rebase;
+    # push the new revision anyway to trigger any potential downstream autorebases.
+    - if [ -z "$(git log --max-count=1 "${BASE_COMMIT}..")" ]; then git push origin "${BASE_COMMIT}:${CI_COMMIT_REF_NAME}"; exit 0; fi
+    - *git_clone_bind9-qa
+    - >
+      "$CI_PROJECT_DIR"/bind9-qa/releng/rebase.py ${REWRITE_CHERRY_PICKS_FROM:+--rewrite-cherry-picks-from ${REWRITE_CHERRY_PICKS_FROM}} --base-project "${BASE_PROJECT}" "${BASE_COMMIT}"
     - *configure
     - meson compile -C build
     - git range-diff --color=always "${BASE_COMMIT}" "${CI_COMMIT_SHA}" HEAD
-    - if ! git push --force-with-lease origin "HEAD:${CI_COMMIT_REF_NAME}"; then touch .git-push-failed; exit 1; fi
+    - if ! git push --force-with-lease -o ci.variable="AUTOREBASED=1" origin "HEAD:${CI_COMMIT_REF_NAME}"; then touch .git-push-failed; exit 1; fi
   after_script:
     - if [ "${CI_JOB_STATUS}" = "success" ]; then exit 0; fi
-    - OLDEST_MERGE_COMMIT="$(git log --reverse --merges --pretty=%H "${CI_COMMIT_SHA}..${BASE_COMMIT}" | head -1)"
-    - read -r OLDEST_MERGE_REQUEST_PROJECT OLDEST_MERGE_REQUEST_ID < <(git log --max-count=1 "${OLDEST_MERGE_COMMIT}" | sed -nE 's|^\s*See merge request ([a-z-]+/bind9)!([0-9]+).*|\1 \2|p' | head -1)
     - |
+      REASON_DETAILS=""
       if git rebase --abort; then
           # Rebase failed; try applying recent commits from the base branch on top of the branch being rebased to determine which one introduces conflicts
           git rebase --rebase-merges "${CI_COMMIT_SHA}" "${BASE_COMMIT}" || true
-          CONFLICT_COMMIT="$(git status | sed -nE 's/^\s*(pick|merge -C) ([0-9a-f]+).*/\2/p' | head -1 | git rev-list -n 1 --stdin)"
+          CONFLICT_COMMIT="$(git rev-parse REBASE_HEAD)"
+          CONFLICT_COMMIT_AUTHOR_LOGIN="$(git log --max-count=1 --pretty="%al" "${CONFLICT_COMMIT}")"
+          CONFLICT_COMMIT_AUTHOR_USERNAME="$(curl -m 5 -s "https://gitlab.isc.org/isc-projects/bind9-qa/-/raw/main/releng/users.json" | jq -r ".${CONFLICT_COMMIT_AUTHOR_LOGIN}" || :)"
+          if [ -n "${CONFLICT_COMMIT_AUTHOR_USERNAME}" ] && [ "${CONFLICT_COMMIT_AUTHOR_USERNAME}" != "null" ]; then
+            CONFLICT_COMMIT_AUTHOR="@**${CONFLICT_COMMIT_AUTHOR_USERNAME}**"
+          else
+            CONFLICT_COMMIT_AUTHOR="\`${CONFLICT_COMMIT_AUTHOR_LOGIN}\`"
+          fi
+          CONFLICT_COMMIT_MERGE="$(git log --reverse --merges --pretty="%H" "${CONFLICT_COMMIT}..${BASE_COMMIT}" | head -1)"
+          read -r CONFLICT_COMMIT_MERGE_REQUEST_PROJECT CONFLICT_COMMIT_MERGE_REQUEST_ID < <(git log --max-count=1 "${CONFLICT_COMMIT_MERGE}" | sed -n -E 's|^\s*See merge request ([a-z-]+/bind9)!([0-9]+).*|\1 \2|p' | head -1)
           REASON="merge conflict introduced by a change in the base branch"
+          REASON_DETAILS="${REASON_DETAILS}\n**First bad commit**: [${CONFLICT_COMMIT}](https://gitlab.isc.org/${CONFLICT_COMMIT_MERGE_REQUEST_PROJECT}/-/commit/${CONFLICT_COMMIT}) (authored by ${CONFLICT_COMMIT_AUTHOR})"
+          REASON_DETAILS="${REASON_DETAILS}\n**First bad merge request**: https://gitlab.isc.org/${CONFLICT_COMMIT_MERGE_REQUEST_PROJECT}/-/merge_requests/${CONFLICT_COMMIT_MERGE_REQUEST_ID}"
       else
           # Rebase did not fail; most likely, this is a build failure, or the job was canceled
-          CONFLICT_COMMIT="${OLDEST_MERGE_COMMIT}"
           if [ "${CI_JOB_STATUS}" = "failed" ]; then
               if [ -f ".git-push-failed" ]; then
                   REASON="branch was updated during rebase"
@@ -2586,14 +2704,13 @@ merged-metadata:
               REASON="job was canceled"
           fi
       fi
-      CONFLICT_COMMIT_AUTHOR="$(git log --max-count=1 --pretty="@%al" "${CONFLICT_COMMIT}")"
       MSG="#### :rotating_light: Autorebase error for branch \`${CI_COMMIT_REF_NAME}\` :rotating_light:"
       MSG="${MSG}\n**Job**: ${CI_JOB_URL}"
       MSG="${MSG}\n**Reason**: ${REASON}"
-      MSG="${MSG}\n**First bad commit**: [${CONFLICT_COMMIT}](https://gitlab.isc.org/${OLDEST_MERGE_REQUEST_PROJECT}/-/commit/${CONFLICT_COMMIT}) (authored by ${CONFLICT_COMMIT_AUTHOR})"
-      MSG="${MSG}\n**First bad merge request**: https://gitlab.isc.org/${OLDEST_MERGE_REQUEST_PROJECT}/-/merge_requests/${OLDEST_MERGE_REQUEST_ID}"
-    - |
-      curl -s -o /dev/null -X POST -H content-type:application/json -d '{"channel":"bind-9-team", "text": "'"${MSG}"'" }' "${MATTERMOST_WEBHOOK_URL}"
+      MSG="${MSG}${REASON_DETAILS}"
+      echo -e "$MSG" > message.txt
+    - >
+      "$CI_PROJECT_DIR"/bind9-qa/releng/message_zulip.py --message message.txt --channel bind9-team --topic 'Autorebase errors'
 
 autorebase-trigger-security:
   <<: *autorebase_common

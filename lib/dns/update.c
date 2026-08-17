@@ -40,6 +40,7 @@
 #include <dns/nsec.h>
 #include <dns/nsec3.h>
 #include <dns/private.h>
+#include <dns/rdata.h>
 #include <dns/rdataclass.h>
 #include <dns/rdataset.h>
 #include <dns/rdatasetiter.h>
@@ -932,24 +933,23 @@ find_zone_keys(dns_zone_t *zone, isc_mem_t *mctx, unsigned int maxkeys,
 
 	/* Add new 'dnskeys' to 'keys' */
 	ISC_LIST_FOREACH(keylist, k, link) {
-		if (count >= maxkeys) {
-			ISC_LIST_UNLINK(keylist, k, link);
-			dns_dnsseckey_destroy(mctx, &k);
-			result = ISC_R_NOSPACE;
-			break;
-		}
+		if (count < maxkeys) {
+			/* Detect inactive keys */
+			if (!dns_dnssec_keyactive(k->key, now)) {
+				dst_key_setinactive(k->key, true);
+			}
 
-		/* Detect inactive keys */
-		if (!dns_dnssec_keyactive(k->key, now)) {
-			dst_key_setinactive(k->key, true);
+			keys[count] = k->key;
+			k->key = NULL;
+			count++;
 		}
-
-		keys[count] = k->key;
-		k->key = NULL;
-		count++;
 
 		ISC_LIST_UNLINK(keylist, k, link);
 		dns_dnsseckey_destroy(mctx, &k);
+	}
+
+	if (count >= maxkeys) {
+		result = ISC_R_NOSPACE;
 	}
 
 	*nkeys = count;
@@ -971,7 +971,7 @@ add_sigs(dns_update_log_t *log, dns_zone_t *zone, dns_db_t *db,
 	dns_rdata_t sig_rdata = DNS_RDATA_INIT;
 	dns_stats_t *dnssecsignstats = dns_zone_getdnssecsignstats(zone);
 	isc_buffer_t buffer;
-	unsigned char data[1024]; /* XXX */
+	unsigned char data[DNS_RDATA_MAXLENGTH];
 	unsigned int i;
 	bool added_sig = false;
 	bool use_kasp = false;
@@ -1310,6 +1310,7 @@ dns_update_signatures(dns_update_log_t *log, dns_zone_t *zone, dns_db_t *db,
 
 struct dns_update_state {
 	unsigned int magic;
+	isc_mem_t *mctx;
 	dns_diff_t diffnames;
 	dns_diff_t affected;
 	dns_diff_t sig_diff;
@@ -1332,6 +1333,23 @@ struct dns_update_state {
 		sign_nsec3
 	} state;
 };
+
+static void
+dns_update_state_clear_contents(dns_update_state_t *state) {
+	REQUIRE(DNS_STATE_VALID(state));
+
+	dns_diff_clear(&state->sig_diff);
+	dns_diff_clear(&state->nsec_diff);
+	dns_diff_clear(&state->nsec_mindiff);
+
+	dns_diff_clear(&state->affected);
+	dns_diff_clear(&state->diffnames);
+	dns_diff_clear(&state->work);
+
+	for (size_t i = 0; i < state->nkeys; i++) {
+		dst_key_free(&state->zone_keys[i]);
+	}
+}
 
 static uint32_t
 dns__jitter_expire(dns_zone_t *zone) {
@@ -1366,10 +1384,9 @@ dns_update_signaturesinc(dns_update_log_t *log, dns_zone_t *zone, dns_db_t *db,
 			 dns_diff_t *diff, uint32_t sigvalidityinterval,
 			 dns_update_state_t **statep) {
 	isc_result_t result = ISC_R_SUCCESS;
-	dns_update_state_t mystate, *state = NULL;
+	dns_update_state_t mystate = { 0 }, *state = NULL;
 	dns_difftuple_t *tuple = NULL;
 	bool flag, build_nsec;
-	unsigned int i;
 	dns_rdata_soa_t soa;
 	dns_rdata_t rdata = DNS_RDATA_INIT;
 	dns_rdataset_t rdataset;
@@ -1385,7 +1402,10 @@ dns_update_signaturesinc(dns_update_log_t *log, dns_zone_t *zone, dns_db_t *db,
 			state = &mystate;
 		} else {
 			state = isc_mem_get(diff->mctx, sizeof(*state));
+			state->mctx = NULL;
+			isc_mem_attach(diff->mctx, &state->mctx);
 		}
+		state->magic = STATE_MAGIC;
 
 		dns_diff_init(diff->mctx, &state->diffnames);
 		dns_diff_init(diff->mctx, &state->affected);
@@ -1444,7 +1464,6 @@ dns_update_signaturesinc(dns_update_log_t *log, dns_zone_t *zone, dns_db_t *db,
 		 */
 		CHECK(dns_diff_sort(diff, temp_order));
 		state->state = sign_updates;
-		state->magic = STATE_MAGIC;
 		SET_IF_NOT_NULL(statep, state);
 	} else {
 		REQUIRE(DNS_STATE_VALID(*statep));
@@ -2005,25 +2024,31 @@ cleanup:
 		dns_db_detachnode(&node);
 	}
 
-	dns_diff_clear(&state->sig_diff);
-	dns_diff_clear(&state->nsec_diff);
-	dns_diff_clear(&state->nsec_mindiff);
-
-	dns_diff_clear(&state->affected);
-	dns_diff_clear(&state->diffnames);
-	dns_diff_clear(&state->work);
-
-	for (i = 0; i < state->nkeys; i++) {
-		dst_key_free(&state->zone_keys[i]);
+	if (state == &mystate) {
+		dns_update_state_clear_contents(state);
+	} else {
+		dns_update_state_t *state_to_clear = state;
+		dns_update_state_clear(&state_to_clear);
 	}
-
-	if (state != &mystate) {
-		*statep = NULL;
-		state->magic = 0;
-		isc_mem_put(diff->mctx, state, sizeof(*state));
-	}
+	SET_IF_NOT_NULL(statep, NULL);
 
 	return result;
+}
+
+void
+dns_update_state_clear(dns_update_state_t **statep) {
+	dns_update_state_t *state = NULL;
+
+	if (statep == NULL || *statep == NULL) {
+		return;
+	}
+
+	state = *statep;
+	dns_update_state_clear_contents(state);
+
+	*statep = NULL;
+	state->magic = 0;
+	isc_mem_putanddetach(&state->mctx, state, sizeof(*state));
 }
 
 static isc_stdtime_t

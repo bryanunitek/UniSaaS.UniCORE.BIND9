@@ -106,7 +106,6 @@ static int nsec_datatype = dns_rdatatype_nsec;
 
 #define REVOKE(x) ((dst_key_flags(x) & DNS_KEYFLAG_REVOKE) != 0)
 
-#define BUFSIZE	  2048
 #define MAXDSKEYS 8
 
 #define SIGNER_EVENTCLASS  ISC_EVENTCLASS(0x4453)
@@ -270,7 +269,7 @@ signwithkey(dns_name_t *name, dns_rdataset_t *rdataset, dst_key_t *key,
 	isc_stdtime_t jendtime, expiry;
 	char keystr[DST_KEY_FORMATSIZE];
 	dns_rdata_t trdata = DNS_RDATA_INIT;
-	unsigned char array[BUFSIZE];
+	unsigned char array[DNS_RDATA_MAXLENGTH];
 	isc_buffer_t b;
 	dns_difftuple_t *tuple;
 
@@ -295,7 +294,7 @@ signwithkey(dns_name_t *name, dns_rdataset_t *rdataset, dst_key_t *key,
 
 	if (tryverify) {
 		result = dns_dnssec_verify(name, rdataset, key, true,
-					   isc_g_mctx, &trdata, NULL);
+					   isc_g_mctx, &trdata, NULL, NULL);
 		if (result == ISC_R_SUCCESS || result == DNS_R_FROMWILDCARD) {
 			vbprintf(3, "\tsignature verified\n");
 			INCSTAT(nverified);
@@ -456,7 +455,7 @@ setverifies(dns_name_t *name, dns_rdataset_t *set, dst_key_t *key,
 	    dns_rdata_t *rrsig) {
 	isc_result_t result;
 	result = dns_dnssec_verify(name, set, key, false, isc_g_mctx, rrsig,
-				   NULL);
+				   NULL, NULL);
 	if (result == ISC_R_SUCCESS || result == DNS_R_FROMWILDCARD) {
 		INCSTAT(nverified);
 		return true;
@@ -1543,6 +1542,11 @@ assignwork(void *arg) {
 		 * The origin was handled by signapex().
 		 */
 		if (dns_name_equal(name, gorigin)) {
+			dns_db_detachnode(&node);
+			goto next;
+		}
+		if (!dns_name_issubdomain(name, gorigin)) {
+			dumpnode(name, node);
 			dns_db_detachnode(&node);
 			goto next;
 		}
@@ -2740,7 +2744,7 @@ findkeys:
 	dns_diff_init(isc_g_mctx, &diff);
 
 	/*
-	 * Update keylist with information from from the key repository.
+	 * Update keylist with information from the key repository.
 	 */
 	dns_dnssec_updatekeys(&keylist, &matchkeys, NULL, gorigin, keyttl,
 			      &diff, isc_g_mctx, report);
@@ -2942,7 +2946,7 @@ writeset(const char *prefix, dns_rdatatype_t type) {
 	isc_region_t r;
 	isc_result_t result;
 	unsigned char dsbuf[DNS_DS_BUFFERSIZE];
-	unsigned char keybuf[DST_KEY_MAXSIZE];
+	unsigned char keybuf[DNS_RDATA_MAXLENGTH];
 	unsigned int filenamelen;
 	const dns_master_style_t *style = (type == dns_rdatatype_dnskey)
 						  ? masterstyle

@@ -21,6 +21,7 @@
 #include <isc/util.h>
 
 #include <dns/db.h>
+#include <dns/name.h>
 #include <dns/nsec.h>
 #include <dns/rdata.h>
 #include <dns/rdatalist.h>
@@ -380,8 +381,7 @@ dns_nsec_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 			(*logit)(arg, ISC_LOG_DEBUG(3), "ignoring child nsec");
 			return ISC_R_IGNORE;
 		}
-		if (type == dns_rdatatype_cname || type == dns_rdatatype_nxt ||
-		    type == dns_rdatatype_nsec || type == dns_rdatatype_key ||
+		if (type == dns_rdatatype_cname || type == dns_rdatatype_nsec ||
 		    !dns_nsec_typepresent(&rdata, dns_rdatatype_cname))
 		{
 			*exists = true;
@@ -415,6 +415,18 @@ dns_nsec_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 		(*logit)(arg, ISC_LOG_DEBUG(3), "nsec proves covered by dname");
 		*exists = false;
 		return DNS_R_DNAME;
+	}
+
+	if (relation != dns_namereln_subdomain &&
+	    dns_nsec_typepresent(&rdata, dns_rdatatype_soa))
+	{
+		/*
+		 * An NSEC with an SOA in the bitmap can only cover
+		 * names that are subdomains of the owner.
+		 */
+		(*logit)(arg, ISC_LOG_DEBUG(3),
+			 "ignoring nsec with SOA covering non-subdomain");
+		return ISC_R_IGNORE;
 	}
 
 	RETERR(dns_rdata_tostruct(&rdata, &nsec, NULL));
@@ -471,8 +483,10 @@ dns_nsec_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 }
 
 bool
-dns_nsec_requiredtypespresent(dns_rdataset_t *nsecset) {
+dns_nsec_is_legal(dns_rdataset_t *nsecset, const dns_name_t *name) {
 	dns_rdataset_t rdataset = DNS_RDATASET_INIT;
+	dns_rdata_nsec_t nsec;
+	isc_result_t result;
 	bool found = false;
 
 	REQUIRE(DNS_RDATASET_VALID(nsecset));
@@ -483,12 +497,19 @@ dns_nsec_requiredtypespresent(dns_rdataset_t *nsecset) {
 	DNS_RDATASET_FOREACH(&rdataset) {
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(&rdataset, &rdata);
-		if (!dns_nsec_typepresent(&rdata, dns_rdatatype_nsec) ||
-		    !dns_nsec_typepresent(&rdata, dns_rdatatype_rrsig))
+
+		/* must never fail */
+		result = dns_rdata_tostruct(&rdata, &nsec, NULL);
+		INSIST(result == ISC_R_SUCCESS);
+
+		if (!dns_name_issubdomain(&nsec.next, name) ||
+		    !dns_nsec_typepresent(&rdata, dns_rdatatype_rrsig) ||
+		    !dns_nsec_typepresent(&rdata, dns_rdatatype_nsec))
 		{
 			dns_rdataset_disassociate(&rdataset);
 			return false;
 		}
+
 		found = true;
 	}
 	dns_rdataset_disassociate(&rdataset);

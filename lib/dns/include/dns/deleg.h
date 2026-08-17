@@ -19,6 +19,26 @@
 #include <dns/types.h>
 
 /*
+ * `dns_delegdb_config_t` centralizes all configurable parameters
+ * for the delegation database.
+ */
+typedef struct {
+	/*
+	 * Defines the size of the delegation cache. Whenever the effective
+	 * cache size comes close to this size, least recently used cache
+	 * entries are discarded. Value `0` means there is no limitation.
+	 */
+	size_t dbsize;
+
+	/*
+	 * Confgure minimum and maximum TTL of a delegation. A value of 0 means
+	 * there is no limits.
+	 */
+	dns_ttl_t minttl;
+	dns_ttl_t maxttl;
+} dns_delegdb_config_t;
+
+/*
  * A `dns_deleg_t` object represents either:
  *
  * - a DELEG-based delegation with `server-ipv4=` and/or `server-ipv6=`
@@ -95,18 +115,19 @@ void
 dns_delegdb_create(dns_delegdb_t **delegdbp);
 
 /*
- * Attach a delegation DB from an existing view to another view. Used when
- * reloading the server and the delegation DB is reused.
+ * Configure the delegation database. Must be called from the exclusive mode
+ * only.
  */
 void
-dns_delegdb_reuse(dns_view_t *oldview, dns_view_t *newview);
+dns_delegdb_setconfig(dns_delegdb_t		 *delegdb,
+		      const dns_delegdb_config_t *config);
 
 /*
- * Shutdown the delegation database. Must be called from any view shutting down
- * which either created a delegdb or reused a delegdb.
+ * Returns a copy of the current configuration of the delegation database. Can
+ * be called anytime.
  */
-void
-dns_delegdb_shutdown(dns_delegdb_t *delegdb);
+dns_delegdb_config_t
+dns_delegdb_getconfig(dns_delegdb_t *delegdb);
 
 /*
  * Lookup for delegations of a given name in the DB. If found, the zonecut is
@@ -151,6 +172,12 @@ dns_delegset_allocset(dns_delegdb_t *db, dns_delegset_t **delegsetp);
 void
 dns_delegset_allocdeleg(dns_delegset_t *delegset, dns_deleg_type_t type,
 			dns_deleg_t **delegp);
+/*
+ * Free the deleg struct and remove it from the delegation set. Can't
+ * be used on delegation set already attached in the DB.
+ */
+void
+dns_delegset_freedeleg(dns_delegset_t *delegset, dns_deleg_t **delegp);
 
 /*
  * Add a new IP into a delegation. Can't be used on a delegation from a
@@ -215,13 +242,5 @@ dns_delegset_fromnsrdataset(isc_mem_t *mctx, dns_rdataset_t *rdataset,
  */
 isc_result_t
 dns_delegdb_delete(dns_delegdb_t *db, const dns_name_t *name, bool tree);
-
-/*
- * Defines the size of the delegation cache. Whenever the effective cache
- * size comes close to this size, least recently used cache entries are
- * discarded. Value `0` means there is no limitation.
- */
-void
-dns_delegdb_setsize(dns_delegdb_t *db, size_t size);
 
 ISC_REFCOUNT_DECL(dns_delegdb);

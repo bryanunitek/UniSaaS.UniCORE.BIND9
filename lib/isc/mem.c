@@ -402,11 +402,12 @@ mem_get(isc_mem_t *ctx, size_t size, int flags) {
 }
 
 static thread_local size_t freed_bytes = 0;
-static _Atomic(isc_stdtime_t) last_purge = 0;
 
 constexpr size_t purge_threshold = (16 * 1024 * 1024);
 
 #if defined(JEMALLOC_API_SUPPORTED) || defined(__GLIBC__)
+
+static _Atomic(isc_stdtime_t) last_purge = 0;
 
 static void
 mem_purge(void) {
@@ -699,6 +700,12 @@ mem_destroy(isc_mem_t *ctx) {
 
 	isc_mutex_destroy(&ctx->lock);
 
+#if ISC_MEM_TRACKLINES
+	if ((mem_debugging & ISC_MEM_DEBUGTRACE) != 0) {
+		fprintf(stderr, "destroyed mctx %p\n", ctx);
+	}
+#endif /* ISC_MEM_TRACKLINES */
+
 	sdallocx(ctx, sizeof(*ctx), ctx->jemalloc_flags);
 }
 
@@ -945,27 +952,6 @@ isc__mem_strdup(isc_mem_t *mctx, const char *s FLARG) {
 	REQUIRE(s != NULL);
 
 	len = strlen(s) + 1;
-
-	ns = isc__mem_allocate(mctx, len, 0 FLARG_PASS);
-
-	strlcpy(ns, s, len);
-
-	return ns;
-}
-
-char *
-isc__mem_strndup(isc_mem_t *mctx, const char *s, size_t size FLARG) {
-	size_t len;
-	char *ns = NULL;
-
-	REQUIRE(VALID_CONTEXT(mctx));
-	REQUIRE(s != NULL);
-	REQUIRE(size != 0);
-
-	len = strlen(s) + 1;
-	if (len > size) {
-		len = size;
-	}
 
 	ns = isc__mem_allocate(mctx, len, 0 FLARG_PASS);
 

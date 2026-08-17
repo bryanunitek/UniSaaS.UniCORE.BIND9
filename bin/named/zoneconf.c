@@ -139,8 +139,14 @@ configure_zone_acl(const cfg_obj_t *zconfig, const cfg_obj_t *vconfig,
 	if (config != NULL && maps[i] != NULL) {
 		const cfg_obj_t *toptions = named_zone_templateopts(config,
 								    maps[i]);
+		/* Check to see if ACL is defined within template */
 		if (toptions != NULL) {
 			maps[i++] = toptions;
+			(void)cfg_map_get(toptions, aclname, &aclobj);
+			if (aclobj != NULL) {
+				aclp = NULL;
+				goto parse_acl;
+			}
 		}
 	}
 
@@ -1856,8 +1862,8 @@ named_zone_configure(const cfg_obj_t *config, const cfg_obj_t *vconfig,
 		obj = NULL;
 		(void)named_config_get(nooptions, "allow-transfer", &obj);
 		if (obj == NULL) {
-			dns_acl_t *none;
-			CHECK(dns_acl_none(mctx, &none));
+			dns_acl_t *none = NULL;
+			dns_acl_none(mctx, &none);
 			dns_zone_setxfracl(zone, none);
 			dns_acl_detach(&none);
 		}

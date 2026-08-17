@@ -108,6 +108,8 @@ struct dns_loadctx {
 	dns_loaddonefunc_t done;
 	void *done_arg;
 
+	isc_loop_t *loop;
+
 	/* Common methods */
 	isc_result_t (*openfile)(dns_loadctx_t *lctx, const char *filename);
 	isc_result_t (*load)(dns_loadctx_t *lctx);
@@ -492,7 +494,6 @@ loadctx_create(dns_masterformat_t format, isc_mem_t *mctx, unsigned int options,
 		.ttl_known = ((options & DNS_MASTER_NOTTL) != 0),
 		.default_ttl_known = ((options & DNS_MASTER_NOTTL) != 0),
 		.warn_1035 = true,
-		.warn_tcr = true,
 		.warn_sigexpired = true,
 		.options = options,
 		.zclass = zclass,
@@ -1945,16 +1946,6 @@ load_text(dns_loadctx_t *lctx) {
 			}
 		}
 
-		if ((type == dns_rdatatype_sig || type == dns_rdatatype_nxt) &&
-		    lctx->warn_tcr && dns_master_isprimary(lctx))
-		{
-			(*callbacks->warn)(callbacks,
-					   "%s:%lu: old style DNSSEC "
-					   " zone detected",
-					   source, line);
-			lctx->warn_tcr = false;
-		}
-
 		if ((lctx->options & DNS_MASTER_AGETTL) != 0) {
 			/*
 			 * Adjust the TTL for $DATE. If the RR has
@@ -2577,33 +2568,38 @@ cleanup:
 	return result;
 }
 
+/*
+ * The combination of isc_work_enqueue() on the current loop and callback on
+ * lctx->loop ensures the correct ordering:
+ *
+ * 1. dns_master_loadfileasync() calls isc_work_enqueue() on the current loop.
+ * 2. master_load() runs asynchronously and can finish before the entry point
+ *    returns; master_load_done() is queued on the current loop and cannot run
+ *    until the entry point returns.
+ * 3. The entry point publishes *lctxp.
+ * 4. master_load_done() runs on the current loop and hands off to lctx->loop.
+ * 5. lctx->done() runs on lctx->loop asynchronously.
+ */
 static void
-load(void *arg) {
+master_load(void *arg) {
 	dns_loadctx_t *lctx = arg;
 	lctx->result = (lctx->load)(lctx);
 }
 
 static void
-load_done(void *arg) {
+master_load_callback(void *arg) {
 	dns_loadctx_t *lctx = arg;
 
 	(lctx->done)(lctx->done_arg, lctx->result);
+	isc_loop_detach(&lctx->loop);
 	dns_loadctx_detach(&lctx);
 }
 
 static void
-load_enqueue(void *lctx) {
-	isc_work_enqueue(isc_loop(), load, load_done, lctx);
-}
+master_load_done(void *arg, isc_result_t result ISC_ATTR_UNUSED) {
+	dns_loadctx_t *lctx = arg;
 
-static void
-dns_loadctx_enqueue(isc_loop_t *loop, dns_loadctx_t *lctx) {
-	dns_loadctx_ref(lctx);
-	if (loop == isc_loop()) {
-		load_enqueue(lctx);
-	} else {
-		isc_async_run(loop, load_enqueue, lctx);
-	}
+	isc_async_run(lctx->loop, master_load_callback, lctx);
 }
 
 isc_result_t
@@ -2634,7 +2630,11 @@ dns_master_loadfileasync(const char *master_file, dns_name_t *top,
 		return result;
 	}
 
-	dns_loadctx_enqueue(loop, lctx);
+	dns_loadctx_ref(lctx);
+	isc_loop_attach(loop, &lctx->loop);
+	isc_work_enqueue(isc_loop(), ISC_WORKLANE_SLOW, master_load,
+			 master_load_done, lctx);
+
 	*lctxp = lctx;
 
 	return ISC_R_SUCCESS;

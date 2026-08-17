@@ -305,12 +305,10 @@ copy_list(cfg_obj_t *to, const cfg_obj_t *from) {
 
 static void
 copy_tuple(cfg_obj_t *to, const cfg_obj_t *from) {
-	const cfg_tuplefielddef_t *fields = from->type->of;
 	size_t size = 0;
 
-	fields = from->type->of;
-	for (const cfg_tuplefielddef_t *field = fields; field->name != NULL;
-	     field++)
+	for (const cfg_tuplefielddef_t *field = from->type->of;
+	     field->name != NULL; field++)
 	{
 		size++;
 	}
@@ -2948,8 +2946,12 @@ cfg_map_findclause(const cfg_type_t *map, const char *name) {
 	REQUIRE(name != NULL);
 
 	found = cfg_map_firstclause(map, &clauses, &idx);
-	while (name != NULL && strcasecmp(name, found->name)) {
+	while (found != NULL && name != NULL && strcasecmp(name, found->name)) {
 		found = cfg_map_nextclause(map, &clauses, &idx);
+	}
+
+	if (found == NULL) {
+		return found;
 	}
 
 	return ((cfg_clausedef_t *)clauses) + idx;
@@ -4043,25 +4045,8 @@ map_define(cfg_obj_t *mapobj, cfg_obj_t *obj, const cfg_clausedef_t *clause) {
 }
 
 isc_result_t
-cfg_map_add(cfg_obj_t *mapobj, cfg_obj_t *obj, const char *clausename) {
-	const cfg_clausedef_t *clause;
-
-	REQUIRE(VALID_CFGOBJ(obj));
-	REQUIRE(VALID_CFGOBJ(mapobj));
-	REQUIRE(mapobj->type->rep == &cfg_rep_map);
-	REQUIRE(clausename != NULL);
-
-	clause = cfg_map_findclause(mapobj->type, clausename);
-	if (clause == NULL || clause->name == NULL) {
-		return ISC_R_FAILURE;
-	}
-
-	return map_define(mapobj, obj, clause);
-}
-
-isc_result_t
-cfg_map_addclone(cfg_obj_t *map, const cfg_obj_t *obj,
-		 const cfg_clausedef_t *clause) {
+cfg_map_add(cfg_obj_t *map, const cfg_obj_t *obj,
+	    const cfg_clausedef_t *clause) {
 	isc_result_t result = ISC_R_SUCCESS;
 	cfg_obj_t *clone = NULL;
 

@@ -121,15 +121,6 @@ typedef enum dst_algorithm {
 	DST_MAX_ALGS = 258,
 } dst_algorithm_t;
 
-/*% A buffer of this size is large enough to hold any key */
-#define DST_KEY_MAXSIZE 1280
-
-/*%
- * A buffer of this size is large enough to hold the textual representation
- * of any key
- */
-#define DST_KEY_MAXTEXTSIZE 2048
-
 /*% 'Type' for dst_read_key() */
 #define DST_TYPE_KEY	  0x1000000 /* KEY key */
 #define DST_TYPE_PRIVATE  0x2000000
@@ -1283,7 +1274,7 @@ dst_algorithm_fromdata(dns_secalg_t algorithm, unsigned char *data,
 		       unsigned int length);
 /*%<
  * If 'algorithm' is PRIVATEOID or PRIVATEDNS, extract the DNSSEC private
- * algorithm encoded at the begining of data and return the DST algorithm
+ * algorithm encoded at the beginning of data and return the DST algorithm
  * number that corresponds to it; if the algorithm is unknown to DST,
  * return 0.
  *

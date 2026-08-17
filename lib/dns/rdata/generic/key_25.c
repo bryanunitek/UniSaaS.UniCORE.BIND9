@@ -18,8 +18,7 @@
 
 #include <dst/dst.h>
 
-#define RRTYPE_KEY_ATTRIBUTES \
-	(DNS_RDATATYPEATTR_ATCNAME | DNS_RDATATYPEATTR_ZONECUTAUTH)
+#define RRTYPE_KEY_ATTRIBUTES (0)
 
 static isc_result_t
 generic_fromtext_key(ARGS_FROMTEXT) {
@@ -134,7 +133,7 @@ generic_totext_key(ARGS_TOTEXT) {
 		const unsigned char *in = sr.base + 1;
 		ASN1_OBJECT *obj = d2i_ASN1_OBJECT(NULL, &in, *sr.base);
 		INSIST(obj != NULL);
-		int n = i2t_ASN1_OBJECT(algbuf, sizeof(buf), obj);
+		int n = i2t_ASN1_OBJECT(algbuf, sizeof(algbuf), obj);
 		ASN1_OBJECT_free(obj);
 		if (n == -1 || (size_t)n >= sizeof(algbuf)) {
 			dns_secalg_format((dns_secalg_t)algorithm, algbuf,

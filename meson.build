@@ -12,7 +12,7 @@
 project(
     'bind',
     ['c'],
-    version: '9.21.24',
+    version: '9.21.25',
     meson_version: '>=1.3.0',
     license: 'MPL-2.0',
     default_options: {
@@ -28,6 +28,8 @@ project(
         'wrap_mode': 'nodownload',
     },
 )
+
+add_test_setup('default', is_default: true, exclude_suites: ['lint'])
 
 fs = import('fs')
 ss = import('sourceset')
@@ -98,13 +100,34 @@ fstrm_capture = find_program('fstrm_capture', required: false)
 git = find_program('git', required: false)
 jq = find_program('jq', required: false)
 nc = find_program('nc', required: false)
-python = find_program(['python3.12', 'python3.11', 'python3', 'python'], required: false)
+python = find_program(
+    [
+        'python3.14',
+        'python3.13',
+        'python3.12',
+        'python3.11',
+        'python3',
+        'python',
+    ],
+    required: false,
+)
 xmllint = find_program('xmllint', required: false)
 xsltproc = find_program('xsltproc', required: false)
 pytest = find_program(
     ['pytest-3', 'py.test-3', 'pytest', 'py.test', 'pytest-pypy'],
     required: false,
 )
+
+## Lint
+bash = find_program('bash', required: false)
+comm = find_program('comm', required: false)
+find = find_program('find', required: false)
+grep = find_program('grep', required: false)
+mktemp = find_program('mktemp', required: false)
+sed = find_program('sed', required: false)
+sort = find_program('sort', required: false)
+tr = find_program('tr', required: false)
+xargs = find_program('xargs', required: false)
 
 ## Documentation
 sphinx_build = find_program('sphinx-build', required: doc_opt)
@@ -254,10 +277,10 @@ ubsan_options = 'halt_on_error=1:abort_on_error=1:disable_coredump=0'
 # Refer to sanitize.c.in for the justification
 config_sanitize = configuration_data()
 
-config_sanitize.set10('BIND_ASAN_ENABLED', 'address' in sanitizer)
-config_sanitize.set10('BIND_LSAN_ENABLED', 'leak' in sanitizer)
-config_sanitize.set10('BIND_TSAN_ENABLED', 'thread' in sanitizer)
-config_sanitize.set10('BIND_UBSAN_ENABLED', 'undefined' in sanitizer)
+config_sanitize.set10('BIND_ASAN_ENABLED', sanitizer.contains('address'))
+config_sanitize.set10('BIND_LSAN_ENABLED', sanitizer.contains('leak'))
+config_sanitize.set10('BIND_TSAN_ENABLED', sanitizer.contains('thread'))
+config_sanitize.set10('BIND_UBSAN_ENABLED', sanitizer.contains('undefined'))
 config_sanitize.set('BIND_ASAN_OPTIONS', asan_options)
 config_sanitize.set('BIND_TSAN_OPTIONS', tsan_options)
 config_sanitize.set('BIND_UBSAN_OPTIONS', ubsan_options)
@@ -336,6 +359,7 @@ if developer_mode
     config.set('ISC_SOCKET_DETAILS', 1)
     config.set('ISC_STATS_CHECKUNDERFLOW', 1)
     config.set('DNS_TYPEPAIR_CHECK', 1)
+    config.set('TEST_PRIVATEDNS', 1)
 endif
 
 # mandatory builtins
@@ -538,6 +562,9 @@ foreach fn, header : {
     'sched_getaffinity': '#include <sched.h>',
     'sched_yield': '#include <sched.h>',
 
+    # CSPRNG
+    'arc4random': '#include <stdlib.h>',
+
     # Misc.
     'chroot': '#include <unistd.h>',
     'clock_gettime': '#include <time.h>',
@@ -643,6 +670,21 @@ else
     config.set('HAVE_OPENSSL_3', false)
     config.set('OPENSSL_API_COMPAT', 10100)
 
+    have_openssl_aead_h = cc.has_header('openssl/aead.h', dependencies: openssl_dep)
+    config.set('HAVE_OPENSSL_AEAD_H', have_openssl_aead_h)
+    if have_openssl_aead_h
+        config.set('HAVE_EVP_AEAD_CTX_NEW', true)
+    else
+        config.set(
+            'HAVE_EVP_AEAD_CTX_NEW',
+            cc.has_function(
+                'EVP_AEAD_CTX_new',
+                dependencies: openssl_dep,
+                prefix: '#include <openssl/evp.h>',
+            ),
+        )
+    endif
+
     config.set(
         'HAVE_FIPS_MODE',
         cc.has_function(
@@ -669,12 +711,18 @@ foreach fn, header : {
     'BIO_write_ex': '#include <openssl/bio.h>',
     'EVP_PKEY_eq': '#include <openssl/evp.h>',
     'SSL_CTX_set1_cert_store': '#include <openssl/ssl.h>',
+    'CRYPTO_chacha_20': '#include <openssl/chacha.h>',
 }
     config.set10(
         'HAVE_@0@'.format(fn.to_upper()),
         cc.has_function(fn, dependencies: openssl_dep, prefix: header),
     )
 endforeach
+
+config.set(
+    'HAVE_OPENSSL_HKDF_H',
+    cc.has_header('openssl/hkdf.h', dependencies: openssl_dep),
+)
 
 ## libuv
 uv_dep = dependency('libuv', version: '>=1.34.0')
@@ -905,6 +953,13 @@ cap_dep = null_dep
 cap_dep = dependency('libcap', required: host_machine.system() == 'linux')
 if cap_dep.found()
     config.set('HAVE_LIBCAP', 1)
+endif
+
+## libscf (Solaris SMF)
+scf_dep = null_dep
+if host_machine.system() == 'sunos'
+    scf_dep = cc.find_library('scf', has_headers: 'libscf.h', required: false)
+    config.set('HAVE_LIBSCF', scf_dep.found())
 endif
 
 ## IDN
@@ -1199,6 +1254,7 @@ nsupdate_src = []
 rndc_confgen_src = []
 rndc_src = []
 tsig_keygen_src = []
+wireformat_src = []
 
 filter_a_src = []
 filter_aaaa_src = []
@@ -1724,6 +1780,7 @@ executable(
         lmdb_dep,
         nghttp2_dep,
         ngtcp2_dep,
+        scf_dep,
         xml2_dep,
         zlib_dep,
 
@@ -1824,6 +1881,19 @@ executable(
         libisc_dep,
         libisccc_dep,
         libisccfg_dep,
+    ],
+)
+
+executable(
+    'named-wireformat',
+    wireformat_src,
+    export_dynamic: true,
+    implicit_include_directories: false,
+    install: true,
+    sources: default_sanitize_options,
+    dependencies: [
+        libdns_dep,
+        libisc_dep,
     ],
 )
 
@@ -2109,6 +2179,88 @@ if doc_opt.allowed()
 endif
 
 ###
+### Project Lints
+###
+
+# meson_version (>=1.11.2) : depends arg in test can take programs
+if git.found()
+    test(
+        'gitignore',
+        sh,
+        suite: 'lint',
+        args: ['util/check-gitignore.sh'],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+
+    test(
+        'trailing-whitespace',
+        sh,
+        suite: 'lint',
+        args: ['util/check-trailing-whitespace.sh'],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+
+    if grep.found() and xargs.found()
+        test(
+            'checklibs',
+            sh,
+            suite: 'lint',
+            args: ['util/checklibs.sh'],
+            verbose: true,
+            workdir: meson.project_source_root(),
+        )
+    endif
+
+    if bash.found() and grep.found() and sed.found()
+        test(
+            'unused-headers',
+            bash,
+            suite: 'lint',
+            args: ['util/unused-headers.sh'],
+            verbose: true,
+            workdir: meson.project_source_root(),
+        )
+    endif
+endif
+
+if grep.found() and sed.found() and sort.found() and tr.found()
+    test(
+        'categories',
+        sh,
+        suite: 'lint',
+        args: ['util/check-categories.sh'],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+endif
+
+if bash.found() and comm.found() and grep.found() and mktemp.found() and sed.found() and sort.found()
+    test(
+        'rdata-registration',
+        bash,
+        suite: 'lint',
+        args: ['util/check-rdata-registration.sh', meson.project_build_root()],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+endif
+
+if find.found() and grep.found()
+    test(
+        'dangling-symlink',
+        sh,
+        suite: 'lint',
+        args: [
+            '-c', 'if find . -type l ! -exec test -e {} \\; -print | grep .; then exit 1; fi',
+        ],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+endif
+
+###
 ### Summary
 ###
 
@@ -2141,6 +2293,7 @@ summary(
         'libcap': cap_dep.version(),
         'libedit': edit_dep.version(),
         'libidn2': idn2_dep.version(),
+        'libscf': scf_dep.found(),
         'libxml2': xml2_dep.version(),
         'LMDB': lmdb_dep.version(),
         'MaxMindDB': maxminddb_dep.version(),

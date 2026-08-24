@@ -2447,9 +2447,10 @@ compute_cc(const resquery_t *query, uint8_t *cookie, const size_t len) {
 
 static bool
 issecuredomain(fetchctx_t *fctx, const dns_name_t *name, dns_rdatatype_t type,
-	       isc_stdtime_t now, bool *ntap) {
+	       isc_stdtime_t now) {
 	dns_name_t suffix;
 	unsigned int labels;
+	bool secure_domain, nta = false;
 
 	/*
 	 * For DS variants we need to check fom the parent domain,
@@ -2464,8 +2465,22 @@ issecuredomain(fetchctx_t *fctx, const dns_name_t *name, dns_rdatatype_t type,
 		name = &suffix;
 	}
 
-	return dns_view_issecuredomain(fctx->res->view, name, now,
-				       CHECKNTA(fctx), ntap);
+	secure_domain = dns_view_issecuredomain(fctx->res->view, name, now,
+						CHECKNTA(fctx), &nta);
+
+	/*
+	 * A covering negative trust anchor suppressed DNSSEC validation for
+	 * an otherwise secure name (RFC 7646). Disclose that to the client
+	 * via an Extended DNS Error (draft-farrokhi-dnsop-ede-nta). Duplicate
+	 * codes are coalesced by dns_ede_add(), so this is emitted at most
+	 * once per fetch.
+	 */
+	if (nta) {
+		dns_ede_add(&fctx->edectx, DNS_EDE_NTA,
+			    "Negative Trust Anchor applied (RFC 7646)");
+	}
+
+	return secure_domain;
 }
 
 static isc_result_t
@@ -5980,12 +5995,6 @@ validated(void *arg) {
 			val->proofs[DNS_VALIDATOR_NOQNAMEPROOF]));
 		INSIST(val->sigrdataset != NULL);
 		val->sigrdataset->ttl = val->rdataset->ttl;
-		if (val->proofs[DNS_VALIDATOR_CLOSESTENCLOSER] != NULL) {
-			result = dns_rdataset_addclosest(
-				val->rdataset,
-				val->proofs[DNS_VALIDATOR_CLOSESTENCLOSER]);
-			RUNTIME_CHECK(result == ISC_R_SUCCESS);
-		}
 	} else if (gettrust(val->rdataset) == dns_trust_answer) {
 		findnoqname(fctx, message, val->name, val->rdataset,
 			    val->sigrdataset);
@@ -6139,7 +6148,6 @@ findnoqname(fetchctx_t *fctx, dns_message_t *message, dns_name_t *name,
 		ISC_LIST_FOREACH(nsec->list, nrdataset, link) {
 			bool data = false, exists = false;
 			bool optout = false, unknown = false;
-			bool setclosest = false;
 			bool setnearest = false;
 
 			if (!dns_rdatatype_isnsec(nrdataset->type)) {
@@ -6161,8 +6169,8 @@ findnoqname(fetchctx_t *fctx, dns_message_t *message, dns_name_t *name,
 			    NXND(dns_nsec3_noexistnodata(
 				    type, name, nsec, nrdataset, zonename,
 				    &exists, &data, &optout, &unknown,
-				    &setclosest, &setnearest, closest, nearest,
-				    fctx_log, fctx)))
+				    &setnearest, closest, nearest, fctx_log,
+				    fctx)))
 			{
 				if (!exists && setnearest) {
 					noqname = nsec;
@@ -6403,8 +6411,7 @@ rctx_cachename(respctx_t *rctx, dns_message_t *message, dns_name_t *name) {
 	/*
 	 * Is DNSSEC validation required for this name?
 	 */
-	bool secure_domain = issecuredomain(fctx, name, fctx->type, rctx->now,
-					    NULL);
+	bool secure_domain = issecuredomain(fctx, name, fctx->type, rctx->now);
 	bool need_validation = secure_domain &&
 			       ((fctx->options & DNS_FETCHOPT_NOVALIDATE) == 0);
 
@@ -6539,7 +6546,7 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
 	isc_result_t result;
 	dns_ttl_t minttl = fctx->res->view->minncachettl;
 	dns_ttl_t maxttl = fctx->res->view->maxncachettl;
-	dns_rdatatype_t covers = fctx->type;
+	dns_rdatatype_t rdtype = fctx->type;
 	dns_db_t *cache = fctx->cache;
 	dns_dbnode_t *node = NULL;
 	dns_rdataset_t rdataset = DNS_RDATASET_INIT;
@@ -6555,7 +6562,7 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
 	if (message->rcode == dns_rcode_nxdomain &&
 	    fctx->type != dns_rdatatype_ds)
 	{
-		covers = dns_rdatatype_any;
+		rdtype = dns_rdatatype_any;
 	}
 
 	/*
@@ -6563,7 +6570,7 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
 	 * to zero to facilitate locating the containing zone of
 	 * an arbitrary zone.
 	 */
-	if (fctx->type == dns_rdatatype_soa && covers == dns_rdatatype_any &&
+	if (fctx->type == dns_rdatatype_soa && rdtype == dns_rdatatype_any &&
 	    fctx->res->zero_no_soa_ttl)
 	{
 		maxttl = 0;
@@ -6585,7 +6592,7 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
 	 */
 	RETERR(dns_db_findnode(fctx->cache, name, true, &node));
 
-	result = dns_ncache_add(message, cache, node, covers, now, minttl,
+	result = dns_ncache_add(message, cache, node, rdtype, now, minttl,
 				maxttl, optout, secure, added);
 
 	/*
@@ -6598,7 +6605,7 @@ negcache(dns_message_t *message, fetchctx_t *fctx, const dns_name_t *name,
 		 * We got the same negative type that we were adding, everything
 		 * is fine, continue.
 		 */
-		if (NEGATIVE(added) && added->covers == covers) {
+		if (NEGATIVE(added) && added->type == rdtype) {
 			result = ISC_R_SUCCESS;
 		} else {
 			dns_rdataset_disassociate(added);
@@ -6652,8 +6659,7 @@ rctx_ncache(respctx_t *rctx) {
 	/*
 	 * Is DNSSEC validation required for this name?
 	 */
-	bool secure_domain = issecuredomain(fctx, name, fctx->type, rctx->now,
-					    NULL);
+	bool secure_domain = issecuredomain(fctx, name, fctx->type, rctx->now);
 	bool need_validation = secure_domain &&
 			       ((fctx->options & DNS_FETCHOPT_NOVALIDATE) == 0);
 
@@ -7589,7 +7595,7 @@ log_zoneversion(unsigned char *version, size_t version_len, unsigned char *nsid,
 	isc_sockaddr_format(&query->addrinfo->sockaddr, addrbuf,
 			    sizeof(addrbuf));
 	if (version[1] == 0 && version_len == 6) {
-		uint32_t serial = version[2] << 24 | version[3] << 2 |
+		uint32_t serial = version[2] << 24 | version[3] << 16 |
 				  version[4] << 8 | version[5];
 		isc_log_write(DNS_LOGCATEGORY_ZONEVERSION,
 			      DNS_LOGMODULE_RESOLVER, level,
@@ -9478,7 +9484,7 @@ rctx_authority_dnssec(respctx_t *rctx) {
 
 				secure_domain = issecuredomain(fctx, name,
 							       dns_rdatatype_ds,
-							       fctx->now, NULL);
+							       fctx->now);
 				if (secure_domain) {
 					rdataset->trust =
 						dns_trust_pending_answer;
@@ -11185,25 +11191,13 @@ dns_resolver_algorithm_supported(dns_resolver_t *resolver,
 	 * Look up the DST algorithm identifier for private-OID
 	 * and private-DNS keys.
 	 */
-	if (alg == DST_ALG_PRIVATEDNS && private != NULL) {
-		isc_buffer_t b;
-		isc_buffer_init(&b, private, len);
-		isc_buffer_add(&b, len);
-		alg = dst_algorithm_fromprivatedns(&b);
+	if (private != NULL) {
+		alg = dst_algorithm_fromdata(alg, private, len);
 		if (alg == 0) {
 			return false;
 		}
 	}
 
-	if (alg == DST_ALG_PRIVATEOID && private != NULL) {
-		isc_buffer_t b;
-		isc_buffer_init(&b, private, len);
-		isc_buffer_add(&b, len);
-		alg = dst_algorithm_fromprivateoid(&b);
-		if (alg == 0) {
-			return false;
-		}
-	}
 	if (dns_nametree_covered(resolver->algorithms, name, NULL, alg)) {
 		return false;
 	}

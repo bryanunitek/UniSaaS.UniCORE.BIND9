@@ -84,6 +84,9 @@ main(int argc, char **argv) {
 	bool quiet = false;
 	isc_buffer_t key_txtbuffer;
 	char key_txtsecret[256];
+	char namebuf[DNS_NAME_FORMATSIZE];
+	char selfbuf[DNS_NAME_FORMATSIZE];
+	char zonebuf[DNS_NAME_FORMATSIZE];
 	const char *keyname = NULL;
 	const char *zone = NULL;
 	const char *self_domain = NULL;
@@ -93,6 +96,7 @@ main(int argc, char **argv) {
 	int keysize = 256;
 	int len = 0;
 	int ch;
+	bool wildcard;
 
 	isc_commandline_init(argc, argv);
 
@@ -212,7 +216,20 @@ main(int argc, char **argv) {
 		}
 	}
 
-	validate_keyname(keyname);
+	makesafe_keyname(keyname, namebuf, sizeof(namebuf), &wildcard);
+
+	/*
+	 * If -s or -z is in use, it's fine to overwrite wildcard, because
+	 * those are the ones we'd be using as the update-policy identity.
+	 */
+	if (self_domain != NULL) {
+		makesafe_keyname(self_domain, selfbuf, sizeof(selfbuf),
+				 &wildcard);
+		self_domain = selfbuf;
+	} else if (zone != NULL) {
+		makesafe_keyname(zone, zonebuf, sizeof(zonebuf), &wildcard);
+		zone = zonebuf;
+	}
 
 	isc_buffer_init(&key_txtbuffer, &key_txtsecret, sizeof(key_txtsecret));
 
@@ -230,28 +247,34 @@ key \"%s\" {\n\
 	algorithm %s;\n\
 	secret \"%.*s\";\n\
 };\n",
-	       keyname, algname, (int)isc_buffer_usedlength(&key_txtbuffer),
+	       namebuf, algname, (int)isc_buffer_usedlength(&key_txtbuffer),
 	       (char *)isc_buffer_base(&key_txtbuffer));
 
-	if (!quiet) {
+	if (wildcard && !quiet) {
+		printf("\n\
+# \"%s\" is a wildcard key, and should not be used in an update-policy.\n",
+		       zone != NULL
+			       ? zone
+			       : (self_domain != NULL ? self_domain : namebuf));
+	} else if (!quiet) {
 		if (self_domain != NULL) {
 			printf("\n\
 # Then, in the \"zone\" statement for the zone containing the\n\
 # name \"%s\", place an \"update-policy\" statement\n\
 # like this one, adjusted as needed for your preferred permissions:\n\
 update-policy {\n\
-	  grant %s name %s ANY;\n\
+	  grant \"%s\" name \"%s\" ANY;\n\
 };\n",
-			       self_domain, keyname, self_domain);
+			       self_domain, namebuf, self_domain);
 		} else if (zone != NULL) {
 			printf("\n\
 # Then, in the \"zone\" definition statement for \"%s\",\n\
 # place an \"update-policy\" statement like this one, adjusted as \n\
 # needed for your preferred permissions:\n\
 update-policy {\n\
-	  grant %s zonesub ANY;\n\
+	  grant \"%s\" zonesub ANY;\n\
 };\n",
-			       zone, keyname);
+			       zone, namebuf);
 		} else {
 			printf("\n\
 # Then, in the \"zone\" statement for each zone you wish to dynamically\n\
@@ -259,9 +282,9 @@ update-policy {\n\
 # to this key.  For example, the following statement grants this key\n\
 # permission to update any name within the zone:\n\
 update-policy {\n\
-	grant %s zonesub ANY;\n\
+	grant \"%s\" zonesub ANY;\n\
 };\n",
-			       keyname);
+			       namebuf);
 		}
 
 		printf("\n\

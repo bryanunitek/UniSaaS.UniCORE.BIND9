@@ -754,9 +754,6 @@ query_reset(ns_client_t *client, bool everything) {
 	}
 	ISC_LIST_INIT(client->query.activeversions);
 
-	if (client->query.authdb != NULL) {
-		dns_db_detach(&client->query.authdb);
-	}
 	if (client->query.authzone != NULL) {
 		dns_zone_detach(&client->query.authzone);
 	}
@@ -824,7 +821,7 @@ query_reset(ns_client_t *client, bool everything) {
 	client->query.dboptions = 0;
 	client->query.fetchoptions = 0;
 	client->query.gluedb = NULL;
-	client->query.authdbset = false;
+	client->query.authdb_id = NS_QUERY_AUTHDB_UNSET;
 	client->query.isreferral = false;
 	client->query.dns64_options = 0;
 	client->query.dns64_ttl = UINT32_MAX;
@@ -991,17 +988,13 @@ query_validatezonedb(ns_client_t *client, const dns_name_t *name,
 		     dns_dbversion_t **versionp) {
 	isc_result_t result;
 	dns_acl_t *queryacl, *queryonacl;
+	dns_zonetype_t zonetype;
 	ns_dbversion_t *dbversion;
 
 	REQUIRE(zone != NULL);
 	REQUIRE(db != NULL);
 
-	/*
-	 * Mirror zone data is treated as cache data.
-	 */
-	if (dns_zone_gettype(zone) == dns_zone_mirror) {
-		return query_checkcacheaccess(client, name, qtype, options);
-	}
+	zonetype = dns_zone_gettype(zone);
 
 	/*
 	 * This limits our searching to the zone where the first name
@@ -1010,9 +1003,10 @@ query_validatezonedb(ns_client_t *client, const dns_name_t *name,
 	 * additional data from other zones. This does not apply if we're
 	 * answering a query where recursion is requested and allowed.
 	 */
-	if (client->query.rpz_st == NULL &&
+	if (zonetype != dns_zone_mirror && client->query.rpz_st == NULL &&
 	    !(client->query.wantrecursion && client->query.recursionok) &&
-	    client->query.authdbset && db != client->query.authdb)
+	    client->query.authdb_id != NS_QUERY_AUTHDB_UNSET &&
+	    (uintptr_t)db != client->query.authdb_id)
 	{
 		return DNS_R_REFUSED;
 	}
@@ -1022,9 +1016,7 @@ query_validatezonedb(ns_client_t *client, const dns_name_t *name,
 	 * zone content is not public data, but a part of local configuration
 	 * and should not be disclosed.
 	 */
-	if (dns_zone_gettype(zone) == dns_zone_staticstub &&
-	    !client->query.recursionok)
-	{
+	if (zonetype == dns_zone_staticstub && !client->query.recursionok) {
 		return DNS_R_REFUSED;
 	}
 
@@ -1043,6 +1035,14 @@ query_validatezonedb(ns_client_t *client, const dns_name_t *name,
 	if (dbversion == NULL) {
 		CTRACE(ISC_LOG_ERROR, "unable to get db version");
 		return DNS_R_SERVFAIL;
+	}
+
+	/*
+	 * Mirror zone data is treated as cache data.
+	 */
+	if (zonetype == dns_zone_mirror) {
+		RETERR(query_checkcacheaccess(client, name, qtype, options));
+		goto approved;
 	}
 
 	if (options.ignoreacl) {
@@ -1661,16 +1661,10 @@ query_additionalauth(query_ctx_t *qctx, const dns_name_t *name,
 	 * First, look within the same zone database for authoritative
 	 * additional data.
 	 */
-	if (!client->query.authdbset || client->query.authdb == NULL) {
-		return ISC_R_NOTFOUND;
-	}
+	RETERR(ns_client_findversionid(client, client->query.authdb_id,
+				       &dbversion));
 
-	dbversion = ns_client_findversion(client, client->query.authdb);
-	if (dbversion == NULL) {
-		return ISC_R_NOTFOUND;
-	}
-
-	dns_db_attach(client->query.authdb, &db);
+	dns_db_attach(dbversion->db, &db);
 	version = dbversion->version;
 
 	CTRACE(ISC_LOG_DEBUG(3), "query_additionalauth: same zone");
@@ -2178,6 +2172,7 @@ query_addrrset(query_ctx_t *qctx, dns_name_t **namep,
 	CTRACE(ISC_LOG_DEBUG(3), "query_addrrset");
 
 	REQUIRE(name != NULL);
+	REQUIRE(rdataset != NULL);
 
 	if (sigrdatasetp != NULL) {
 		sigrdataset = *sigrdatasetp;
@@ -2588,7 +2583,7 @@ query_stale_refresh(ns_client_t *client, dns_name_t *qname,
 }
 
 static void
-query_stale_refresh_ncache(ns_client_t *client) {
+query_stale_refresh_ncache(ns_client_t *client, dns_rdataset_t *rdataset) {
 	dns_name_t *qname;
 
 	if (client->query.origqname != NULL) {
@@ -2596,7 +2591,7 @@ query_stale_refresh_ncache(ns_client_t *client) {
 	} else {
 		qname = client->query.qname;
 	}
-	query_stale_refresh(client, qname, NULL);
+	query_stale_refresh(client, qname, rdataset);
 }
 
 static void
@@ -3008,6 +3003,7 @@ rpz_find_p(ns_client_t *client, dns_name_t *self_name, dns_rdatatype_t qtype,
 		CTRACE(ISC_LOG_ERROR, "rpz_ready() failed");
 		return DNS_R_SERVFAIL;
 	}
+	INSIST(*rdatasetp != NULL);
 	*versionp = NULL;
 	result = rpz_getdb(client, p_name, rpz_type, zonep, dbp, versionp);
 	if (result != ISC_R_SUCCESS) {
@@ -4905,7 +4901,7 @@ query_trace(query_ctx_t *qctx) {
 		 "origqname:%s, timer:%d, authdb:%d, referral:%d, id:%hu",
 		 iabuf, qabuf, qctx->client->query.restarts, qbuf,
 		 (int)qctx->client->query.timerset,
-		 (int)qctx->client->query.authdbset,
+		 (int)(qctx->client->query.authdb_id != NS_QUERY_AUTHDB_UNSET),
 		 (int)qctx->client->query.isreferral,
 		 qctx->client->message->id);
 	CCTRACE(ISC_LOG_DEBUG(3), mbuf);
@@ -5315,21 +5311,19 @@ ns__query_start(query_ctx_t *qctx) {
 	 * Update query statistics.
 	 */
 	if (qctx->fresp == NULL && qctx->client->query.restarts == 0) {
-		if (qctx->is_zone) {
-			if (qctx->zone != NULL) {
-				/*
-				 * if is_zone = true, zone = NULL then this is
-				 * a DLZ zone.  Don't attempt to attach zone.
-				 */
-				dns_zone_attach(qctx->zone,
-						&qctx->client->query.authzone);
-				qctx->zhooks =
-					dns_zone_gethooktable(qctx->zone);
-				CALL_HOOK(NS_QUERY_AUTHZONE_ATTACHED, qctx);
-			}
-			dns_db_attach(qctx->db, &qctx->client->query.authdb);
+		/*
+		 * If this is a DLZ zone, qctx->is_zone is true but qctx->zone
+		 * is NULL, so there is no zone object to attach.
+		 */
+		if (qctx->is_zone && qctx->zone != NULL) {
+			dns_zone_attach(qctx->zone,
+					&qctx->client->query.authzone);
+			qctx->zhooks = dns_zone_gethooktable(qctx->zone);
+			CALL_HOOK(NS_QUERY_AUTHZONE_ATTACHED, qctx);
 		}
-		qctx->client->query.authdbset = true;
+		qctx->client->query.authdb_id = qctx->is_zone
+							? (uintptr_t)qctx->db
+							: NS_QUERY_AUTHDB_NONE;
 
 		isc_nmhandle_t *handle = qctx->client->inner.handle;
 
@@ -7267,7 +7261,6 @@ query_addnoqnameproof(query_ctx_t *qctx) {
 	isc_buffer_t *dbuf, b;
 	dns_name_t *fname = NULL;
 	dns_rdataset_t *neg = NULL, *negsig = NULL;
-	isc_result_t result;
 
 	CTRACE(ISC_LOG_DEBUG(3), "query_addnoqnameproof");
 
@@ -7280,48 +7273,11 @@ query_addnoqnameproof(query_ctx_t *qctx) {
 	neg = ns_client_newrdataset(client);
 	negsig = ns_client_newrdataset(client);
 
-	CHECK(dns_rdataset_getnoqname(qctx->noqname, fname, neg, negsig));
+	RUNTIME_CHECK(dns_rdataset_getnoqname(qctx->noqname, fname, neg,
+					      negsig) == ISC_R_SUCCESS);
 
 	query_addrrset(qctx, &fname, &neg, &negsig, dbuf,
 		       DNS_SECTION_AUTHORITY);
-
-	if (!qctx->noqname->attributes.closest) {
-		goto cleanup;
-	}
-
-	if (fname == NULL) {
-		dbuf = ns_client_getnamebuf(client);
-		fname = ns_client_newname(client, dbuf, &b);
-	}
-
-	if (neg == NULL) {
-		neg = ns_client_newrdataset(client);
-	} else {
-		dns_rdataset_cleanup(neg);
-	}
-
-	if (negsig == NULL) {
-		negsig = ns_client_newrdataset(client);
-	} else {
-		dns_rdataset_cleanup(negsig);
-	}
-
-	result = dns_rdataset_getclosest(qctx->noqname, fname, neg, negsig);
-	RUNTIME_CHECK(result == ISC_R_SUCCESS);
-
-	query_addrrset(qctx, &fname, &neg, &negsig, dbuf,
-		       DNS_SECTION_AUTHORITY);
-
-cleanup:
-	if (neg != NULL) {
-		ns_client_putrdataset(client, &neg);
-	}
-	if (negsig != NULL) {
-		ns_client_putrdataset(client, &negsig);
-	}
-	if (fname != NULL) {
-		ns_client_releasename(client, &fname);
-	}
 }
 
 /*%
@@ -7411,7 +7367,7 @@ query_respond_any(query_ctx_t *qctx) {
 			dns_rdataset_disassociate(qctx->rdataset);
 		} else if ((qctx->qtype == dns_rdatatype_any ||
 			    qctx->rdataset->type == qctx->qtype) &&
-			   qctx->rdataset->type != 0)
+			   !qctx->rdataset->attributes.negative)
 		{
 			if (qctx->rdataset->attributes.noqname &&
 			    qctx->client->inner.wantdnssec)
@@ -9753,7 +9709,7 @@ query_ncache(query_ctx_t *qctx, isc_result_t result) {
 	}
 
 	if (!qctx->is_zone && qctx->client->query.recursionok) {
-		query_stale_refresh_ncache(qctx->client);
+		query_stale_refresh_ncache(qctx->client, qctx->rdataset);
 	}
 
 	return query_nodata(qctx, result);

@@ -191,6 +191,7 @@ start_udp_child(isc_sockaddr_t *iface, isc_nmsocket_t *sock, uv_os_sock_t fd,
 	if (isc__netmgr->load_balance_sockets) {
 		csock->fd = isc__nm_udp_lb_socket(iface->type.sa.sa_family);
 	} else {
+		INSIST(fd >= 0);
 		csock->fd = dup(fd);
 	}
 	INSIST(csock->fd >= 0);
@@ -387,10 +388,8 @@ isc_nm_routeconnect(isc_nm_cb_t cb, void *cbarg) {
 
 	return ISC_R_SUCCESS;
 #else  /* USE_ROUTE_SOCKET */
-	UNUSED(mgr);
 	UNUSED(cb);
 	UNUSED(cbarg);
-	UNUSED(extrahandlesize);
 	return ISC_R_NOTIMPLEMENTED;
 #endif /* USE_ROUTE_SOCKET */
 }

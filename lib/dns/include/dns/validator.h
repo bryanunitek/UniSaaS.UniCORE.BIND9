@@ -61,10 +61,12 @@
 
 #include <dst/dst.h>
 
-#define DNS_VALIDATOR_NOQNAMEPROOF    0
-#define DNS_VALIDATOR_NODATAPROOF     1
-#define DNS_VALIDATOR_NOWILDCARDPROOF 2
-#define DNS_VALIDATOR_CLOSESTENCLOSER 3
+typedef enum {
+	DNS_VALIDATOR_NOQNAMEPROOF = 0,
+	DNS_VALIDATOR_NODATAPROOF = 1,
+	DNS_VALIDATOR_NOWILDCARDPROOF = 2,
+	DNS_VALIDATOR_MAXPROOF
+} dns_validator_proof_t;
 
 /*%
  * A validator object represents a validation in progress.
@@ -112,7 +114,7 @@ struct dns_validator {
 	/*
 	 * Proofs to be cached.
 	 */
-	dns_name_t *proofs[4];
+	dns_name_t *proofs[DNS_VALIDATOR_MAXPROOF];
 	/*
 	 * Optout proof seen.
 	 */
@@ -126,7 +128,7 @@ struct dns_validator {
 	atomic_bool	   canceling;
 	unsigned int	   attributes;
 	isc_work_t	  *offloaded_work;
-	isc_job_cb	   offloaded_cb;
+	isc_work_cb	   offloaded_cb;
 	dns_fetch_t	  *fetch;
 	dns_validator_t	  *subvalidator;
 	dns_validator_t	  *parent;

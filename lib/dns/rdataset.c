@@ -369,7 +369,7 @@ dns_rdataset_towire(dns_rdataset_t *rdataset, const dns_name_t *owner_name,
 		    bool partial, unsigned int options, unsigned int *countp) {
 	isc_result_t result;
 	isc_buffer_t savedbuffer = *target;
-	isc_buffer_t rrbuffer;
+	isc_buffer_t rrbuffer = *target;
 	dns_fixedname_t fixed;
 	dns_name_t *name = NULL;
 
@@ -478,30 +478,6 @@ dns__rdataset_getnoqname(dns_rdataset_t *rdataset, dns_name_t *name,
 		return ISC_R_NOTIMPLEMENTED;
 	}
 	return (rdataset->methods->getnoqname)(rdataset, name, neg,
-					       negsig DNS__DB_FLARG_PASS);
-}
-
-isc_result_t
-dns_rdataset_addclosest(dns_rdataset_t *rdataset, dns_name_t *name) {
-	REQUIRE(DNS_RDATASET_VALID(rdataset));
-	REQUIRE(rdataset->methods != NULL);
-	if (rdataset->methods->addclosest == NULL) {
-		return ISC_R_NOTIMPLEMENTED;
-	}
-	return (rdataset->methods->addclosest)(rdataset, name);
-}
-
-isc_result_t
-dns__rdataset_getclosest(dns_rdataset_t *rdataset, dns_name_t *name,
-			 dns_rdataset_t *neg,
-			 dns_rdataset_t *negsig DNS__DB_FLARG) {
-	REQUIRE(DNS_RDATASET_VALID(rdataset));
-	REQUIRE(rdataset->methods != NULL);
-
-	if (rdataset->methods->getclosest == NULL) {
-		return ISC_R_NOTIMPLEMENTED;
-	}
-	return (rdataset->methods->getclosest)(rdataset, name, neg,
 					       negsig DNS__DB_FLARG_PASS);
 }
 

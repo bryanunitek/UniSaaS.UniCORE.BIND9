@@ -95,15 +95,17 @@ dns_nsec3_buildrdata(dns_db_t *db, dns_dbversion_t *version, dns_dbnode_t *node,
 	memmove(p, nexthash, hash_length);
 	p += hash_length;
 
-	r.length = (unsigned int)(p - buffer);
-	r.base = buffer;
+	r = (isc_region_t){
+		.base = buffer,
+		.length = (unsigned int)(p - buffer),
+	};
 
 	/*
 	 * Use the end of the space for a raw bitmap leaving enough
 	 * space for the window identifiers and length octets.
 	 */
-	bm = r.base + r.length + 512;
-	nsec_bits = r.base + r.length;
+	bm = buffer + r.length + 512;
+	nsec_bits = buffer + r.length;
 	max_type = 0;
 	if (node == NULL) {
 		goto collapse_bitmap;
@@ -1295,8 +1297,8 @@ deleteit(dns_db_t *db, dns_dbversion_t *ver, const dns_name_t *name,
 
 	result = dns_db_find(db, name, ver, dns_rdatatype_any,
 			     DNS_DBFIND_GLUEOK | DNS_DBFIND_NOWILD,
-			     (isc_stdtime_t)0, NULL,
-			     dns_fixedname_name(&foundname), NULL, NULL);
+			     (isc_stdtime_t)0, dns_fixedname_name(&foundname),
+			     NULL, NULL);
 	if (result == DNS_R_EMPTYNAME || result == ISC_R_SUCCESS ||
 	    result == DNS_R_ZONECUT)
 	{
@@ -1844,9 +1846,7 @@ dns_nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 	/*
 	 * Is this zone the same or deeper than the current zone?
 	 */
-	if (dns_name_countlabels(zonename) == 0 ||
-	    dns_name_issubdomain(zone, zonename))
-	{
+	if (dns_name_empty(zonename) || dns_name_issubdomain(zone, zonename)) {
 		dns_name_copy(zone, zonename);
 	}
 
@@ -1985,7 +1985,7 @@ dns_nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 		 */
 		if (order == 0) {
 			if (closest != NULL &&
-			    (dns_name_countlabels(closest) == 0 ||
+			    (dns_name_empty(closest) ||
 			     dns_name_issubdomain(qname, closest)) &&
 			    !dns_nsec3_typepresent(&rdata, dns_rdatatype_ds) &&
 			    !dns_nsec3_typepresent(&rdata,
@@ -2029,7 +2029,7 @@ dns_nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 				 "name does not exist: '%s'",
 				 namebuf);
 			if (nearest != NULL &&
-			    (dns_name_countlabels(nearest) == 0 ||
+			    (dns_name_empty(nearest) ||
 			     dns_name_issubdomain(nearest, qname)))
 			{
 				dns_name_copy(qname, nearest);

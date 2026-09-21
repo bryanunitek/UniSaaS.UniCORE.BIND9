@@ -1054,9 +1054,6 @@ static void
 rctx_done(respctx_t *rctx, isc_result_t result);
 
 static void
-update_rootdb(dns_view_t *view, dns_message_t *message);
-
-static void
 rctx_logpacket(respctx_t *rctx);
 
 static void
@@ -3564,7 +3561,7 @@ fctx_getaddresses_forwarders(fetchctx_t *fctx) {
 		 * Strip label to get the correct forwarder (if any).
 		 */
 		if (dns_rdatatype_atparent(fctx->type) &&
-		    dns_name_countlabels(name) > 1)
+		    dns_name_belowroot(name))
 		{
 			unsigned int labels;
 			dns_name_init(&suffix);
@@ -5057,7 +5054,7 @@ fctx__create(dns_resolver_t *res, isc_loop_t *loop, const dns_name_t *name,
 		 * the forwarder).
 		 */
 		if (dns_rdatatype_atparent(fctx->type) &&
-		    dns_name_countlabels(name) > 1)
+		    dns_name_belowroot(name))
 		{
 			dns_name_init(&suffix);
 			labels = dns_name_countlabels(name);
@@ -5924,14 +5921,23 @@ validated(void *arg) {
 		inc_stats(res, dns_resstatscounter_valfail);
 		fctx->valfail++;
 		result = fctx->vresult = val->result;
-		if (result != DNS_R_BROKENCHAIN) {
+		switch (result) {
+		case DNS_R_BROKENCHAIN:
+		case ISC_R_CANCELED:
+		case ISC_R_SHUTTINGDOWN:
+		case ISC_R_QUOTA:
+			if (!negative) {
+				/*
+				 * Cache the data as pending for later
+				 * validation.
+				 */
+				cache_rrset(fctx, now, val->name, val->rdataset,
+					    val->sigrdataset, NULL, NULL, NULL,
+					    false);
+			}
+			break;
+		default:
 			delete_rrset(fctx, val->name, val->type);
-		} else if (!negative) {
-			/*
-			 * Cache the data as pending for later validation.
-			 */
-			cache_rrset(fctx, now, val->name, val->rdataset,
-				    val->sigrdataset, NULL, NULL, NULL, false);
 		}
 
 		add_bad(fctx, message, addrinfo, result, badns_validation);
@@ -5942,10 +5948,20 @@ validated(void *arg) {
 			goto cleanup;
 		}
 
-		/* A broken trust chain isn't recoverable. */
-		if (result == DNS_R_BROKENCHAIN) {
+		/*
+		 * A broken trust chain isn't recoverable, and neither is an
+		 * exhausted DNSSEC validation budget: retrying would only do
+		 * more validation work against the same quota.
+		 */
+		switch (result) {
+		case DNS_R_BROKENCHAIN:
+		case ISC_R_CANCELED:
+		case ISC_R_SHUTTINGDOWN:
+		case ISC_R_QUOTA:
 			done = true;
 			goto cleanup;
+		default:
+			break;
 		}
 
 		/*
@@ -5991,8 +6007,8 @@ validated(void *arg) {
 
 	if (val->proofs[DNS_VALIDATOR_NOQNAMEPROOF] != NULL) {
 		CHECK(dns_rdataset_addnoqname(
-			val->rdataset,
-			val->proofs[DNS_VALIDATOR_NOQNAMEPROOF]));
+			val->rdataset, val->proofs[DNS_VALIDATOR_NOQNAMEPROOF],
+			val->noqnametype));
 		INSIST(val->sigrdataset != NULL);
 		val->sigrdataset->ttl = val->rdataset->ttl;
 	} else if (gettrust(val->rdataset) == dns_trust_answer) {
@@ -6188,7 +6204,7 @@ findnoqname(fetchctx_t *fctx, dns_message_t *message, dns_name_t *name,
 	}
 
 	if (result == ISC_R_SUCCESS && noqname != NULL) {
-		(void)dns_rdataset_addnoqname(rdataset, noqname);
+		(void)dns_rdataset_addnoqname(rdataset, noqname, found);
 	}
 
 	return;
@@ -6835,12 +6851,13 @@ name_external(const dns_name_t *name, dns_rdatatype_t type, respctx_t *rctx) {
 }
 
 static size_t
-cache_delegglue(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
-		respctx_t *rctx, const dns_name_t *nsname) {
+cache_delegglue(fetchctx_t *fctx, dns_message_t *message,
+		dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
+		const dns_name_t *nsname) {
 	dns_rdataset_t *rdataset = NULL;
 	size_t naddrs = 0;
 	isc_result_t result;
-	dns_resolver_t *res = rctx->fctx->res;
+	dns_resolver_t *res = fctx->res;
 	bool hasv4 = res->dispatches4 != NULL;
 	bool dns64 = !ISC_LIST_EMPTY(res->view->dns64) && res->view->usedns64;
 
@@ -6848,8 +6865,7 @@ cache_delegglue(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
 		return 0;
 	}
 
-	result = dns_message_findname(rctx->query->rmessage,
-				      DNS_SECTION_ADDITIONAL, nsname,
+	result = dns_message_findname(message, DNS_SECTION_ADDITIONAL, nsname,
 				      dns_rdatatype_a, 0, NULL, &rdataset);
 	if (result != ISC_R_SUCCESS) {
 		return 0;
@@ -6878,18 +6894,18 @@ cache_delegglue(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
 }
 
 static size_t
-cache_delegglue6(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
-		 respctx_t *rctx, const dns_name_t *nsname) {
+cache_delegglue6(fetchctx_t *fctx, dns_message_t *message,
+		 dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
+		 const dns_name_t *nsname) {
 	dns_rdataset_t *rdataset = NULL;
 	size_t naddrs = 0;
 	isc_result_t result;
 
-	if (rctx->fctx->res->dispatches6 == NULL) {
+	if (fctx->res->dispatches6 == NULL) {
 		return 0;
 	}
 
-	result = dns_message_findname(rctx->query->rmessage,
-				      DNS_SECTION_ADDITIONAL, nsname,
+	result = dns_message_findname(message, DNS_SECTION_ADDITIONAL, nsname,
 				      dns_rdatatype_aaaa, 0, NULL, &rdataset);
 	if (result != ISC_R_SUCCESS) {
 		return 0;
@@ -6930,11 +6946,11 @@ cache_delegglue6(dns_delegset_t *delegset, dns_deleg_t *deleg, dns_ttl_t *ttl,
  * And the flag would be true only from `cache_delegns()`.
  */
 static isc_result_t
-cache_delegns(respctx_t *rctx) {
-	fetchctx_t *fctx = rctx->fctx;
+cache_delegns(fetchctx_t *fctx, const dns_name_t *name, dns_rdataset_t *nsset,
+	      dns_message_t *message) {
 	dns_delegdb_t *delegdb = fctx->res->view->deleg;
 	dns_delegset_t *delegset = NULL;
-	dns_ttl_t ttl = rctx->ns_rdataset->ttl;
+	dns_ttl_t ttl = nsset->ttl;
 	size_t labels;
 	size_t ns_count = 0;
 	size_t max_servers = fctx->res->view->max_delegation_servers;
@@ -6944,7 +6960,7 @@ cache_delegns(respctx_t *rctx) {
 
 	dns_delegset_allocset(delegdb, &delegset);
 
-	DNS_RDATASET_FOREACH(rctx->ns_rdataset) {
+	DNS_RDATASET_FOREACH(nsset) {
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdata_ns_t ns;
 		dns_deleg_t *deleg = NULL;
@@ -6965,16 +6981,16 @@ cache_delegns(respctx_t *rctx) {
 		dns_delegset_allocdeleg(delegset, DNS_DELEGTYPE_NS_GLUES,
 					&deleg);
 
-		dns_rdataset_current(rctx->ns_rdataset, &rdata);
+		dns_rdataset_current(nsset, &rdata);
 		INSIST(rdata.type == dns_rdatatype_ns);
 		dns_rdata_tostruct(&rdata, &ns, NULL);
 
 		/* in-domain GLUE */
-		if (dns_name_issubdomain(&ns.name, rctx->ns_name)) {
-			naddrs += cache_delegglue(delegset, deleg, &ttl, rctx,
-						  &ns.name);
-			naddrs += cache_delegglue6(delegset, deleg, &ttl, rctx,
-						   &ns.name);
+		if (dns_name_issubdomain(&ns.name, name)) {
+			naddrs += cache_delegglue(fctx, message, delegset,
+						  deleg, &ttl, &ns.name);
+			naddrs += cache_delegglue6(fctx, message, delegset,
+						   deleg, &ttl, &ns.name);
 			if (naddrs == 0) {
 				INSIST(ISC_LIST_EMPTY(deleg->addresses));
 				char namebuf[DNS_NAME_FORMATSIZE];
@@ -6999,19 +7015,20 @@ cache_delegns(respctx_t *rctx) {
 		 * allowed to get glues (this allows in-domain and sibling, but
 		 * not different parents).
 		 */
-		labels = dns_name_countlabels(rctx->ns_name);
+		labels = dns_name_countlabels(name);
 		if (labels > 1) {
 			dns_fixedname_t fparent;
 			dns_name_t *parent = dns_fixedname_initname(&fparent);
 
-			dns_name_getlabelsequence(rctx->ns_name, 1, labels - 1,
-						  parent);
+			dns_name_getlabelsequence(name, 1, labels - 1, parent);
 
 			if (dns_name_issubdomain(&ns.name, parent)) {
-				naddrs += cache_delegglue(delegset, deleg, &ttl,
-							  rctx, &ns.name);
-				naddrs += cache_delegglue6(
-					delegset, deleg, &ttl, rctx, &ns.name);
+				naddrs += cache_delegglue(fctx, message,
+							  delegset, deleg, &ttl,
+							  &ns.name);
+				naddrs += cache_delegglue6(fctx, message,
+							   delegset, deleg,
+							   &ttl, &ns.name);
 			}
 		}
 
@@ -7026,7 +7043,11 @@ cache_delegns(respctx_t *rctx) {
 		}
 	}
 
-	result = dns_delegset_insert(delegdb, rctx->ns_name, ttl, delegset);
+	if (ISC_LIST_EMPTY(delegset->delegs)) {
+		result = ISC_R_FAILURE;
+	} else {
+		result = dns_delegset_insert(delegdb, name, ttl, delegset);
+	}
 	dns_delegset_detach(&delegset);
 
 	return result;
@@ -8180,12 +8201,26 @@ resquery_response_continue(void *arg, isc_result_t result) {
 
 		/*
 		 * For a priming response, copy the '.' NS answer and
-		 * root-server glue straight from the wire into
-		 * view->rootdb so bestzonecut and ADB see the refreshed
-		 * set without a cache round trip.
+		 * root-server glue straight from the wire into the delegdb so
+		 * bestzonecut and ADB see the refreshed set without a cache
+		 * round trip.
 		 */
 		if ((fctx->options & DNS_FETCHOPT_PRIMING) != 0) {
-			update_rootdb(fctx->res->view, query->rmessage);
+			dns_rdataset_t *nsset = NULL;
+			tresult = dns_message_findname(
+				query->rmessage, DNS_SECTION_ANSWER,
+				dns_rootname, dns_rdatatype_ns, 0, NULL,
+				&nsset);
+			if (tresult == ISC_R_SUCCESS) {
+				result = cache_delegns(fctx, dns_rootname,
+						       nsset, query->rmessage);
+
+				if (result != ISC_R_SUCCESS) {
+					FCTXTRACE3("failed to cache priming "
+						   "response",
+						   result);
+				}
+			}
 		}
 	}
 
@@ -8756,7 +8791,7 @@ rctx_answer_positive(respctx_t *rctx) {
 
 	if (rctx->ns_rdataset != NULL &&
 	    dns_name_equal(fctx->domain, rctx->ns_name) &&
-	    !dns_name_equal(rctx->ns_name, dns_rootname))
+	    !dns_name_isroot(rctx->ns_name))
 	{
 		trim_ns_ttl(fctx, rctx->ns_name, rctx->ns_rdataset);
 	}
@@ -9190,7 +9225,7 @@ rctx_answer_none(respctx_t *rctx) {
 
 	if (rctx->ns_rdataset != NULL &&
 	    dns_name_equal(fctx->domain, rctx->ns_name) &&
-	    !dns_name_equal(rctx->ns_name, dns_rootname))
+	    !dns_name_isroot(rctx->ns_name))
 	{
 		trim_ns_ttl(fctx, rctx->ns_name, rctx->ns_rdataset);
 	}
@@ -9221,7 +9256,7 @@ rctx_answer_none(respctx_t *rctx) {
 	    rctx->query->rmessage->rcode == dns_rcode_noerror &&
 	    fctx->type == dns_rdatatype_ds && rctx->soa_name != NULL &&
 	    dns_name_equal(rctx->soa_name, fctx->name) &&
-	    !dns_name_equal(fctx->name, dns_rootname))
+	    !dns_name_isroot(fctx->name))
 	{
 		return DNS_R_CHASEDSSERVERS;
 	}
@@ -9532,7 +9567,7 @@ rctx_referral(respctx_t *rctx) {
 	 * namespace checks, even if their address info uses the forwarder flag.
 	 */
 	if (ISFORWARDER(fctx->addrinfo) && !ISDUALSTACK(fctx->addrinfo) &&
-	    dns_name_equal(fctx->fwdname, dns_rootname))
+	    dns_name_isroot(fctx->fwdname))
 	{
 		log_formerr(fctx, "referral from global forwarder");
 		rctx->result = DNS_R_FORMERR;
@@ -9572,7 +9607,8 @@ rctx_referral(respctx_t *rctx) {
 	 * happen.
 	 */
 	INSIST(rctx->ns_rdataset != NULL);
-	(void)cache_delegns(rctx);
+	(void)cache_delegns(rctx->fctx, rctx->ns_name, rctx->ns_rdataset,
+			    rctx->query->rmessage);
 
 	/*
 	 * Set the current query domain to the referral name.
@@ -9580,7 +9616,7 @@ rctx_referral(respctx_t *rctx) {
 	 * XXXRTH  We should check if we're in forward-only mode, and
 	 *		if so we should bail out.
 	 */
-	INSIST(dns_name_countlabels(fctx->domain) > 0);
+	INSIST(!dns_name_empty(fctx->domain));
 	fcount_decr(fctx);
 
 	dns_delegset_detach(&fctx->delegset);
@@ -10350,123 +10386,6 @@ dns_resolver_create(dns_view_t *view, unsigned int options,
 	return ISC_R_SUCCESS;
 }
 
-/*
- * Copy the A or AAAA rdataset at 'target' out of 'message's ADDITIONAL
- * section into 'rootdb' under 'ver', replacing any existing record of
- * that type.  Returns ISC_R_SUCCESS if the glue was stored or if the
- * response did not carry glue for this target (both benign); any other
- * result indicates a zone-DB failure that the caller should roll back
- * on.  Shrinks '*minttlp' to the TTL of the stored rdataset.
- */
-static isc_result_t
-update_rootdb_glue(dns_db_t *rootdb, dns_dbversion_t *ver,
-		   dns_message_t *message, const dns_name_t *target,
-		   dns_rdatatype_t type, isc_stdtime_t now,
-		   dns_ttl_t *minttlp) {
-	dns_name_t *name = NULL;
-	dns_rdataset_t *rdataset = NULL;
-	dns_dbnode_t *node = NULL;
-	isc_result_t result;
-
-	result = dns_message_findname(message, DNS_SECTION_ADDITIONAL, target,
-				      type, 0, &name, &rdataset);
-	if (result != ISC_R_SUCCESS) {
-		/* No glue for this target in the response. */
-		return ISC_R_SUCCESS;
-	}
-
-	RETERR(dns_db_findnode(rootdb, name, true, &node));
-
-	(void)dns_db_deleterdataset(rootdb, node, ver, type, 0);
-	result = dns_db_addrdataset(rootdb, node, ver, now, rdataset, 0, NULL);
-	dns_db_detachnode(&node);
-	if (result != ISC_R_SUCCESS && result != DNS_R_UNCHANGED) {
-		return result;
-	}
-
-	if (rdataset->ttl < *minttlp) {
-		*minttlp = rdataset->ttl;
-	}
-	return ISC_R_SUCCESS;
-}
-
-/*
- * Refresh 'view->rootdb' from a priming response message.  The '.' NS
- * rdataset is replaced with the fetched one and, for each nameserver
- * it lists, the matching A/AAAA glue from the response's ADDITIONAL
- * section is copied in.  Only glue for names that actually appear as
- * NS targets is accepted; arbitrary ADDITIONAL records are ignored so
- * a hostile response cannot inject unrelated data into rootdb.  Glue
- * the response did not carry is left untouched, so the hints-file
- * records loaded at startup remain as a fallback.
- *
- * The version is committed only if every write succeeded; any failure
- * rolls the whole update back so rootdb never ends up with a '.' NS
- * rdataset that was deleted but not re-added.
- *
- * Called synchronously from response processing while the message is
- * still live, so records go straight from the wire into rootdb.
- */
-static void
-update_rootdb(dns_view_t *view, dns_message_t *message) {
-	dns_db_t *rootdb = view->rootdb;
-	dns_dbversion_t *ver = NULL;
-	dns_dbnode_t *node = NULL;
-	dns_rdataset_t *nsset = NULL;
-	isc_stdtime_t now = isc_stdtime_now();
-	dns_ttl_t minttl = UINT32_MAX;
-	isc_result_t result;
-
-	if (rootdb == NULL) {
-		return;
-	}
-
-	result = dns_message_findname(message, DNS_SECTION_ANSWER, dns_rootname,
-				      dns_rdatatype_ns, 0, NULL, &nsset);
-	if (result != ISC_R_SUCCESS) {
-		return;
-	}
-
-	result = dns_db_newversion(rootdb, &ver);
-	if (result != ISC_R_SUCCESS) {
-		return;
-	}
-
-	CHECK(dns_db_findnode(rootdb, dns_rootname, true, &node));
-
-	(void)dns_db_deleterdataset(rootdb, node, ver, dns_rdatatype_ns, 0);
-	result = dns_db_addrdataset(rootdb, node, ver, now, nsset, 0, NULL);
-	dns_db_detachnode(&node);
-	if (result != ISC_R_SUCCESS && result != DNS_R_UNCHANGED) {
-		goto cleanup;
-	}
-	result = ISC_R_SUCCESS;
-	minttl = nsset->ttl;
-
-	DNS_RDATASET_FOREACH(nsset) {
-		dns_rdata_t rdata = DNS_RDATA_INIT;
-		dns_rdata_ns_t ns;
-
-		dns_rdataset_current(nsset, &rdata);
-		if (dns_rdata_tostruct(&rdata, &ns, NULL) != ISC_R_SUCCESS) {
-			continue;
-		}
-
-		CHECK(update_rootdb_glue(rootdb, ver, message, &ns.name,
-					 dns_rdatatype_a, now, &minttl));
-		CHECK(update_rootdb_glue(rootdb, ver, message, &ns.name,
-					 dns_rdatatype_aaaa, now, &minttl));
-	}
-
-	atomic_store_relaxed(&view->rootdb_expires, (uint32_t)(now + minttl));
-
-cleanup:
-	if (node != NULL) {
-		dns_db_detachnode(&node);
-	}
-	dns_db_closeversion(rootdb, &ver, result == ISC_R_SUCCESS);
-}
-
 static void
 prime_done(void *arg) {
 	dns_fetchresponse_t *resp = (dns_fetchresponse_t *)arg;
@@ -10678,8 +10597,8 @@ fctx_minimize_qname(fetchctx_t *fctx) {
 			 * try with an additional label prepended.
 			 */
 			result = dns_db_find(fctx->cache, &name, NULL,
-					     dns_rdatatype_ns, 0, 0, NULL,
-					     fname, &rdataset, NULL);
+					     dns_rdatatype_ns, 0, 0, fname,
+					     &rdataset, NULL);
 			dns_rdataset_cleanup(&rdataset);
 			switch (result) {
 			case ISC_R_SUCCESS:

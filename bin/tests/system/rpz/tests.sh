@@ -353,6 +353,16 @@ nochange() {
   make_dignm
   digcmd $* >$DIGNM
   digcmd $* @$ns1 >${DIGNM}_OK
+
+  # A resolver with no cache hit and RD=0 returns SERVFAIL, but status
+  # code aside, everything else should match.
+  case $* in
+    *+norecur*)
+      sed -i.orig 's/status: NOERROR/status: SERVFAIL/' ${DIGNM}_OK
+      rm ${DIGNM}_OK.orig
+      ;;
+  esac
+
   ckresult "$*" ${DIGNM}_OK && clean_result ${DIGNM}_OK
 }
 
@@ -659,12 +669,15 @@ if test -z "$HAVE_CORE"; then
   test -z "$HAVE_CORE" || setret "found $HAVE_CORE; memory leak?"
 fi
 
-# look for complaints from lib/dns/rpz.c and bin/name/query.c
+# look for complaints from lib/dns/rpz.c and bin/name/query.c, except the
+# one the outofzone.tld2 policy zone is there to provoke
+EXPECTED='invalid rpz owner name "com"'
 for runfile in ns*/named.run; do
-  EMSGS=$(nextpart $runfile | grep -E -l 'invalid rpz|rpz.*failed' || true)
+  EMSGS=$(nextpart $runfile | grep -Fv "$EXPECTED" \
+    | grep -E -l 'invalid rpz|rpz.*failed' || true)
   if test -n "$EMSGS"; then
     setret "error messages in $runfile starting with:"
-    grep -E 'invalid rpz|rpz.*failed' ns*/named.run \
+    grep -E 'invalid rpz|rpz.*failed' ns*/named.run | grep -Fv "$EXPECTED" \
       | sed -e '10,$d' -e 's/^//' | cat_i
   fi
 done

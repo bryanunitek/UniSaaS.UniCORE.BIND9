@@ -33,21 +33,25 @@ clang-format over it — it is not your code to reformat.
 
 ## Trailers
 
-- `Assisted-by: <tool>:<model-id>` (model id from the runtime
-  environment, e.g. `claude-fable-5`) ONLY when LLM wrote the
-  load-bearing code/test/config content of the commit. NOT for:
-  rewording a message, squashing fixups, review-only advice, or a
-  comment/doc block added around a user-authored fix — a comment is
-  prose, not the fix; do not rationalize "the comment was AI" to keep
-  the trailer.
-- After the model id, list specialized analysis tools actually used
-  (coccinelle, clang-tidy, AFL, Coverity, fuzzers) — never trivial
-  tooling (git, compilers, meson, clang-format, black, ruff).
-- NEVER, in any repo:
-  - `Co-Authored-By: ...` or any AI co-author line;
-  - `Signed-off-by:` from the agent (it cannot certify the DCO);
-  - `Closes #N` / `Fixes #N` / `Refs #N` — issue refs go in the MR
-    description; the branch name already encodes the issue number;
+- **Always** follow the rules for AI agents in CONTRIBUTING.md: the
+  `Assisted-by: <tool>:<model-id>` format, which specialized analysis
+  tools to list after the model id (never trivial tooling), no
+  `Signed-off-by:` from the agent, no `Co-Authored-By:` or any AI
+  co-author line.
+- Add `Assisted-by` ONLY when the LLM wrote the load-bearing
+  code/test/config content of the commit. NOT for: rewording a
+  message, squashing fixups, review-only advice, or a comment/doc
+  block added around a user-authored fix — a comment is prose, not the
+  fix; do not rationalize "the comment was AI" to keep the trailer.
+- Never add tool-generated bookkeeping trailers — `Claude-Session:`
+  and anything else the harness would like to stamp on the message
+  (session/conversation ids, transcript links, "generated with"
+  footers). A commit message is for the reviewer and the log, not for
+  agent telemetry; `dangerfile.py` rejects `Claude-Session:` outright.
+  If such a trailer shows up in a message you are about to commit,
+  strip it before committing.
+- NEVER `Closes #N` / `Fixes #N` / `Refs #N` — issue refs go in the MR
+  description; the branch name already encodes the issue number.
 
 ## Amending
 

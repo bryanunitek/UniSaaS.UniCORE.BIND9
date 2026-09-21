@@ -322,6 +322,23 @@ def test_handle_ixfr_notimp(named_port, ns4):
     check_rdata_in_txt_record("IXFR NOTIMP")
 
 
+def test_axfr_rejects_above_apex_data(named_port, ns4):
+    send_switch_control_command("aboveapex")
+    with ns4.watch_log_from_here() as watcher:
+        ns4.rndc("retransfer nil.")
+        watcher.wait_for_sequence(
+            [
+                isctest.transfer.transfer_message(
+                    "nil", "10.53.0.5", "out-of-zone data received: '.'", named_port
+                ),
+                isctest.transfer.transfer_message(
+                    "nil", "10.53.0.5", "Transfer status: FORMERR", named_port
+                ),
+            ]
+        )
+    check_rdata_in_txt_record("above-apex AXFR", should_exist=False)
+
+
 @pytest.mark.parametrize(
     "command_file,expected_rdata,named_log_line,xfrin_msg",
     [
@@ -458,18 +475,21 @@ def test_tcp_message_compression_makes_difference(named_port, ns8):
     assert len(ns8.log.grep("sending TCP message of")) > 300
 
 
-# test mapped. zone with out zone data
-def test_mapped_zone(named_port, ns3):
-    msg_txt = dns.message.make_query("mapped.", "TXT")
-    get_response(msg_txt, "10.53.0.3", allow_empty_answer=True)
+# ns2 is a secondary for the mapped. zone whose primary never responds, so it
+# used to serve the zone from a pre-seeded backup file that contains
+# out-of-zone data.  The zone database now refuses to load such a file,
+# leaving both ns2 and its downstream secondary ns3 without the zone.
+def test_load_rejects_out_of_zone_data(ns2, ns3):
+    with ns2.watch_log_from_start() as watcher:
+        watcher.wait_for_line(
+            "zone mapped/IN: loading from master file mapped.db failed: "
+            "out-of-zone data"
+        )
 
-    ns3.stop()
-    ns3.start(["--noclean", "--restart", "--port", str(named_port)])
-
-    get_response(msg_txt, "10.53.0.3", allow_empty_answer=True)
-
-    msg_axfr = dns.message.make_query("mapped.", "AXFR")
-    validate_axfr_from_query_and_file(msg_axfr, "10.53.0.3", "knowngood.mapped")
+    msg = dns.message.make_query("mapped.", "SOA")
+    for addr in (ns2.ip, ns3.ip):
+        res = isctest.query.tcp(msg, addr)
+        isctest.check.servfail(res)
 
 
 # test that a zone with too many records is rejected (AXFR)
@@ -632,8 +652,8 @@ def test_malformed_private_dns_identifier_overrun(ns6):
         )
 
 
-# See #5767
-def test_ixfr_race(ns6):
+# See #5767 and #6114
+def test_ixfr_race(named_port, ns6):
     isctest.log.info(
         "Check that ixfr-race has been successfully transferred by the secondary"
     )
@@ -647,9 +667,13 @@ def test_ixfr_race(ns6):
                 "zone ixfr-race/IN: zone transfer finished: success"
             )
 
-    isctest.log.info("Try to reload the zone from the primary")
+    isctest.log.info("Trigger IXFR fallback while a second diff is queued")
     with ns6.watch_log_from_here() as watcher_transfer_completed:
         ns6.rndc("reload ixfr-race")
+        watcher_transfer_completed.wait_for_line(
+            f"transfer of 'ixfr-race/IN' from 10.53.0.11#{named_port}: "
+            "got SERVFAIL, retrying with AXFR"
+        )
         watcher_transfer_completed.wait_for_line(
             "zone ixfr-race/IN: zone transfer finished: success"
         )

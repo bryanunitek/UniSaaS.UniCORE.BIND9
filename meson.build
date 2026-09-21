@@ -12,7 +12,7 @@
 project(
     'bind',
     ['c'],
-    version: '9.21.25',
+    version: '9.21.26',
     meson_version: '>=1.3.0',
     license: 'MPL-2.0',
     default_options: {
@@ -172,6 +172,7 @@ add_project_arguments(
         '-Werror=vla',
 
         '-fdiagnostics-show-option',
+        '-fexperimental-late-parse-attributes',
         '-fno-delete-null-pointer-checks',
         '-fno-strict-aliasing',
         '-fstrict-flex-arrays=3',
@@ -565,6 +566,10 @@ foreach fn, header : {
     # CSPRNG
     'arc4random': '#include <stdlib.h>',
 
+    # C23 sized frees
+    'free_sized': '#include <stdlib.h>',
+    'free_aligned_sized': '#include <stdlib.h>',
+
     # Misc.
     'chroot': '#include <unistd.h>',
     'clock_gettime': '#include <time.h>',
@@ -815,32 +820,6 @@ if jemalloc_opt.allowed()
         config.set('HAVE_JEMALLOC', 1)
     endif
 endif
-
-foreach fn : [
-    'malloc_usable_size',
-]
-    if cc.has_function(
-        fn,
-        prefix: '#include <malloc.h>',
-        args: sys_defines,
-        dependencies: thread_dep,
-    )
-        config.set('HAVE_@0@'.format(fn.to_upper()), 1)
-    endif
-endforeach
-
-foreach fn : [
-    'malloc_size',
-]
-    if cc.has_function(
-        fn,
-        prefix: '#include <malloc/malloc.h>',
-        args: sys_defines,
-        dependencies: thread_dep,
-    )
-        config.set('HAVE_@0@'.format(fn.to_upper()), 1)
-    endif
-endforeach
 
 ## dnstap
 dnstap_dep = null_dep # Will be filled later
@@ -2202,6 +2181,24 @@ if git.found()
         workdir: meson.project_source_root(),
     )
 
+    test(
+        'conf-indentation',
+        sh,
+        suite: 'lint',
+        args: ['util/check-conf-indentation.sh'],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+
+    test(
+        'jinja-include-indentation',
+        sh,
+        suite: 'lint',
+        args: ['util/check-jinja-include-indentation.sh'],
+        verbose: true,
+        workdir: meson.project_source_root(),
+    )
+
     if grep.found() and xargs.found()
         test(
             'checklibs',
@@ -2213,10 +2210,10 @@ if git.found()
         )
     endif
 
-    if bash.found() and grep.found() and sed.found()
+    if grep.found() and sed.found() and sort.found()
         test(
             'unused-headers',
-            bash,
+            sh,
             suite: 'lint',
             args: ['util/unused-headers.sh'],
             verbose: true,

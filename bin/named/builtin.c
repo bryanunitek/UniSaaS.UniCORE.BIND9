@@ -25,6 +25,7 @@
 #include <isc/util.h>
 
 #include <dns/callbacks.h>
+#include <dns/db.h>
 #include <dns/dbiterator.h>
 #include <dns/rdatalist.h>
 #include <dns/rdatasetiter.h>
@@ -855,12 +856,13 @@ findnode(dns_db_t *db, const dns_name_t *name, bool create,
 }
 
 static isc_result_t
-find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
-     dns_rdatatype_t type, unsigned int options, isc_stdtime_t now,
-     dns_dbnode_t **nodep, dns_name_t *foundname,
-     dns_clientinfomethods_t *methods ISC_ATTR_UNUSED,
-     dns_clientinfo_t *clientinfo ISC_ATTR_UNUSED, dns_rdataset_t *rdataset,
-     dns_rdataset_t *sigrdataset DNS__DB_FLARG) {
+builtin_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
+	     dns_rdatatype_t type, unsigned int options, isc_stdtime_t now,
+	     dns_name_t *foundname,
+	     dns_clientinfomethods_t *methods ISC_ATTR_UNUSED,
+	     dns_clientinfo_t *clientinfo ISC_ATTR_UNUSED,
+	     dns_rdataset_t *rdataset,
+	     dns_rdataset_t *sigrdataset DNS__DB_FLARG) {
 	bdb_t *bdb = (bdb_t *)db;
 	isc_result_t result;
 	dns_dbnode_t *node = NULL;
@@ -871,7 +873,6 @@ find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 	bool dns64;
 
 	REQUIRE(VALID_BDB(bdb));
-	REQUIRE(nodep == NULL || *nodep == NULL);
 	REQUIRE(version == NULL || version == (dns_dbversion_t *)&dummy);
 
 	if (!dns_name_issubdomain(name, &db->origin)) {
@@ -1005,9 +1006,7 @@ find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 		dns_name_copy(xname, foundname);
 	}
 
-	if (nodep != NULL) {
-		*nodep = node;
-	} else if (node != NULL) {
+	if (node != NULL) {
 		bdbnode_detachnode(&node DNS__DB_FLARG_PASS);
 	}
 
@@ -1090,6 +1089,27 @@ allrdatasets(dns_db_t *db, dns_dbnode_t *node, dns_dbversion_t *version,
 	return ISC_R_SUCCESS;
 }
 
+static void
+builtin_addglue(dns_db_t *db, dns_dbversion_t *version,
+		const dns_name_t *owner_name, dns_rdataset_t *rdataset,
+		dns_message_t *msg, dns_clientinfomethods_t *methods,
+		dns_clientinfo_t *clientinfo) {
+	bdb_t *bdb = (bdb_t *)db;
+
+	REQUIRE(VALID_BDB(bdb));
+	REQUIRE(version == NULL || version == (dns_dbversion_t *)&dummy);
+
+	/*
+	 * Builtin databases do not synthesize delegations, so there is no
+	 * glue.
+	 */
+	UNUSED(owner_name);
+	UNUSED(rdataset);
+	UNUSED(msg);
+	UNUSED(methods);
+	UNUSED(clientinfo);
+}
+
 static dns_dbmethods_t bdb_methods = {
 	.destroy = destroy,
 	.currentversion = currentversion,
@@ -1098,7 +1118,8 @@ static dns_dbmethods_t bdb_methods = {
 	.findrdataset = findrdataset,
 	.allrdatasets = allrdatasets,
 	.findnode = findnode,
-	.find = find,
+	.find = builtin_find,
+	.addglue = builtin_addglue,
 };
 
 static isc_result_t

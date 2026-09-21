@@ -93,18 +93,6 @@ typedef enum {
 #define FETCH_RECTYPE_HOOK(client) \
 	((client)->query.recursions[RECTYPE_HOOK].fetch)
 
-/*%
- * nameserver recursion parameters, to uniquely identify a recursion
- * query; this is used to detect a recursion loop
- */
-typedef struct ns_query_recparam {
-	dns_rdatatype_t qtype;
-	dns_name_t     *qname;
-	dns_fixedname_t fqname;
-	dns_name_t     *qdomain;
-	dns_fixedname_t fqdomain;
-} ns_query_recparam_t;
-
 /*% nameserver query structure */
 struct ns_query {
 	union {
@@ -159,10 +147,10 @@ struct ns_query {
 	struct {
 		dns_db_t       *db;
 		dns_zone_t     *zone;
-		dns_dbnode_t   *node;
 		dns_rdatatype_t qtype;
 		dns_name_t     *fname;
 		dns_fixedname_t fixed;
+		dns_fixedname_t foundname;
 		isc_result_t	result;
 		dns_rdataset_t *rdataset;
 		dns_rdataset_t *sigrdataset;
@@ -174,8 +162,6 @@ struct ns_query {
 		isc_nmhandle_t *handle;
 		dns_fetch_t    *fetch;
 	} recursions[RECTYPE_COUNT];
-
-	ns_query_recparam_t recparam;
 
 	dns_keytag_t root_key_sentinel_keyid;
 	bool	     root_key_sentinel_is_ta;
@@ -192,7 +178,7 @@ typedef struct query_ctx query_ctx_t;
 /* query context structure */
 struct query_ctx {
 	isc_buffer_t *dbuf;	     /* name buffer */
-	dns_name_t   *fname;	     /* found name from DB lookup */
+	dns_name_t   *fname;	     /* lookup/response name */
 	dns_name_t   *tname;	     /* temporary name, used
 				      * when processing ANY
 				      * queries */
@@ -210,15 +196,14 @@ struct query_ctx {
 	bool is_staticstub_zone;
 	bool resuming; /* resumed from recursion? */
 	bool dns64, dns64_exclude, rpz;
-	bool authoritative;		    /* authoritative query? */
-	bool want_restart;		    /* CNAME chain or other
-					     * restart needed */
-	bool		need_wildcardproof; /* wildcard proof needed */
-	bool		nxrewrite;	    /* negative answer from RPZ */
-	bool		findcoveringnsec;   /* lookup covering NSEC */
-	bool		answer_has_ns;	    /* NS is in answer */
-	dns_fixedname_t wildcardname;	    /* name needing wcard proof */
-	dns_fixedname_t dsname;		    /* name needing DS */
+	bool authoritative;		  /* authoritative query? */
+	bool want_restart;		  /* CNAME chain or other
+					   * restart needed */
+	bool		nxrewrite;	  /* negative answer from RPZ */
+	bool		findcoveringnsec; /* lookup covering NSEC */
+	bool		answer_has_ns;	  /* NS is in answer */
+	dns_fixedname_t dsname;		  /* name needing DS */
+	dns_fixedname_t foundname;	  /* DB owner from lookup */
 
 	ns_client_t *client; /* client object */
 	bool	     async;  /* asynchronous hook running */
@@ -227,11 +212,10 @@ struct query_ctx {
 
 	dns_db_t	*db;	  /* zone or cache database */
 	dns_dbversion_t *version; /* DB version */
-	dns_dbnode_t	*node;	  /* DB node */
 
 	dns_db_t	*zdb;	 /* zone DB values, saved */
-	dns_dbnode_t	*znode;	 /* while searching cache */
 	dns_name_t	*zfname; /* for a better answer */
+	dns_fixedname_t	 zfoundname;
 	dns_dbversion_t *zversion;
 	dns_rdataset_t	*zrdataset;
 	dns_rdataset_t	*zsigrdataset;
@@ -272,7 +256,7 @@ ns_query_done(query_ctx_t *qctx);
 
 isc_result_t
 ns_query_recurse(ns_client_t *client, dns_rdatatype_t qtype, dns_name_t *qname,
-		 dns_name_t *qdomain, dns_delegset_t *delegset, bool resuming);
+		 bool resuming);
 /*%<
  * Prepare client for recursion, then create a resolver fetch, with
  * the event callback set to fetch_callback(). Afterward we terminate

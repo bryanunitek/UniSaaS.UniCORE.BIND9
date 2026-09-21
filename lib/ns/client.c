@@ -148,9 +148,7 @@ ns_client_transport_type(const ns_client_t *client) {
 
 	switch (isc_nm_socket_type(client->inner.handle)) {
 	case isc_nm_udpsocket:
-	case isc_nm_udplistener:
 	case isc_nm_proxyudpsocket:
-	case isc_nm_proxyudplistener:
 		return DNS_TRANSPORT_UDP;
 	case isc_nm_tlssocket:
 	case isc_nm_tlslistener:
@@ -264,6 +262,7 @@ ns_client_endrequest(ns_client_t *client) {
 	client->inner.extflags = 0;
 	client->inner.ednsversion = -1;
 	client->inner.additionaldepth = 0;
+	client->inner.additionaltotal = 0;
 	if (dns_name_dynamic(&client->inner.rad)) {
 		dns_name_free(&client->inner.rad, client->manager->mctx);
 	}
@@ -1209,7 +1208,7 @@ ns_client_addopt(ns_client_t *client, dns_message_t *message) {
 		if (dns_name_dynamic(&client->inner.rad)) {
 			rad = &client->inner.rad;
 		}
-		if (rad != NULL && !dns_name_equal(rad, dns_rootname)) {
+		if (rad != NULL && !dns_name_isroot(rad)) {
 			dns_ednsopt_t option = {
 				.code = DNS_OPT_REPORT_CHANNEL,
 				.length = rad->length,

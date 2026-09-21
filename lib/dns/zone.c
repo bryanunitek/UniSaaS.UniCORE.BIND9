@@ -475,7 +475,8 @@ dns_zone_create(dns_zone_t **zonep, isc_mem_t *mctx, isc_tid_t tid) {
 	REQUIRE(mctx != NULL);
 
 	now = isc_time_now();
-	zone = isc_mem_get(mctx, sizeof(*zone));
+	zone = isc_mem_getx(mctx, sizeof(*zone),
+			    ISC_MEM_ALIGN(ISC_OS_CACHELINE_SIZE));
 	*zone = (dns_zone_t){
 		.masterformat = dns_masterformat_none,
 		.journalsize = -1,
@@ -730,7 +731,10 @@ dns__zone_free(dns_zone_t *zone) {
 	ZONEDB_DESTROYLOCK(&zone->dblock);
 	isc_mutex_destroy(&zone->lock);
 	zone->magic = 0;
-	isc_mem_putanddetach(&zone->mctx, zone, sizeof(*zone));
+	isc_mem_t *mctx = zone->mctx;
+	isc_mem_putx(mctx, zone, sizeof(*zone),
+		     ISC_MEM_ALIGN(ISC_OS_CACHELINE_SIZE));
+	isc_mem_detach(&mctx);
 }
 
 /*
@@ -1795,7 +1799,7 @@ zone_check_mx(dns_zone_t *zone, dns_db_t *db, dns_name_t *name,
 	/*
 	 * "." means the services does not exist.
 	 */
-	if (dns_name_equal(name, dns_rootname)) {
+	if (dns_name_isroot(name)) {
 		return true;
 	}
 
@@ -1817,15 +1821,15 @@ zone_check_mx(dns_zone_t *zone, dns_db_t *db, dns_name_t *name,
 
 	foundname = dns_fixedname_initname(&fixed);
 
-	result = dns_db_find(db, name, NULL, dns_rdatatype_a, 0, 0, NULL,
-			     foundname, NULL, NULL);
+	result = dns_db_find(db, name, NULL, dns_rdatatype_a, 0, 0, foundname,
+			     NULL, NULL);
 	if (result == ISC_R_SUCCESS) {
 		return true;
 	}
 
 	if (result == DNS_R_NXRRSET) {
 		result = dns_db_find(db, name, NULL, dns_rdatatype_aaaa, 0, 0,
-				     NULL, foundname, NULL, NULL);
+				     foundname, NULL, NULL);
 		if (result == ISC_R_SUCCESS) {
 			return true;
 		}
@@ -1896,7 +1900,7 @@ zone_check_srv(dns_zone_t *zone, dns_db_t *db, dns_name_t *name,
 	/*
 	 * "." means the services does not exist.
 	 */
-	if (dns_name_equal(name, dns_rootname)) {
+	if (dns_name_isroot(name)) {
 		return true;
 	}
 
@@ -1918,15 +1922,15 @@ zone_check_srv(dns_zone_t *zone, dns_db_t *db, dns_name_t *name,
 
 	foundname = dns_fixedname_initname(&fixed);
 
-	result = dns_db_find(db, name, NULL, dns_rdatatype_a, 0, 0, NULL,
-			     foundname, NULL, NULL);
+	result = dns_db_find(db, name, NULL, dns_rdatatype_a, 0, 0, foundname,
+			     NULL, NULL);
 	if (result == ISC_R_SUCCESS) {
 		return true;
 	}
 
 	if (result == DNS_R_NXRRSET) {
 		result = dns_db_find(db, name, NULL, dns_rdatatype_aaaa, 0, 0,
-				     NULL, foundname, NULL, NULL);
+				     foundname, NULL, NULL);
 		if (result == ISC_R_SUCCESS) {
 			return true;
 		}
@@ -2019,8 +2023,8 @@ zone_check_glue(dns_zone_t *zone, dns_db_t *db, bool *has_a, bool *has_aaaa,
 	 * Perform a regular lookup to catch DNAME records then look
 	 * for glue.
 	 */
-	result = dns_db_find(db, name, NULL, dns_rdatatype_a, 0, 0, NULL,
-			     foundname, &a, NULL);
+	result = dns_db_find(db, name, NULL, dns_rdatatype_a, 0, 0, foundname,
+			     &a, NULL);
 	switch (result) {
 	case ISC_R_SUCCESS:
 	case DNS_R_DNAME:
@@ -2029,16 +2033,15 @@ zone_check_glue(dns_zone_t *zone, dns_db_t *db, bool *has_a, bool *has_aaaa,
 	default:
 		dns_rdataset_cleanup(&a);
 		result = dns_db_find(db, name, NULL, dns_rdatatype_a,
-				     DNS_DBFIND_GLUEOK, 0, NULL, foundname, &a,
-				     NULL);
+				     DNS_DBFIND_GLUEOK, 0, foundname, &a, NULL);
 	}
 	if (result == ISC_R_SUCCESS) {
 		SET_IF_NOT_NULL(has_a, true);
 		dns_rdataset_disassociate(&a);
 		if (has_aaaa != NULL && !*has_aaaa) {
 			result = dns_db_find(db, name, NULL, dns_rdatatype_aaaa,
-					     DNS_DBFIND_GLUEOK, 0, NULL,
-					     foundname, &aaaa, NULL);
+					     DNS_DBFIND_GLUEOK, 0, foundname,
+					     &aaaa, NULL);
 			if (result == ISC_R_SUCCESS) {
 				*has_aaaa = true;
 			}
@@ -2055,8 +2058,8 @@ zone_check_glue(dns_zone_t *zone, dns_db_t *db, bool *has_a, bool *has_aaaa,
 	    result == DNS_R_GLUE)
 	{
 		tresult = dns_db_find(db, name, NULL, dns_rdatatype_aaaa,
-				      DNS_DBFIND_GLUEOK, 0, NULL, foundname,
-				      &aaaa, NULL);
+				      DNS_DBFIND_GLUEOK, 0, foundname, &aaaa,
+				      NULL);
 		if (tresult == ISC_R_SUCCESS) {
 			dns_rdataset_cleanup(&a);
 			SET_IF_NOT_NULL(has_aaaa, true);
@@ -2289,8 +2292,8 @@ zone_is_served_by(dns_zone_t *zone, dns_db_t *db, dns_rdatatype_t type,
 	}
 
 	dns_rdataset_init(&rdataset);
-	result = dns_db_find(db, name, NULL, type, 0, 0, NULL, foundname,
-			     &rdataset, NULL);
+	result = dns_db_find(db, name, NULL, type, 0, 0, foundname, &rdataset,
+			     NULL);
 	dns_rdataset_cleanup(&rdataset);
 	switch (result) {
 	case DNS_R_DELEGATION:
@@ -2345,7 +2348,7 @@ integrity_checks(dns_zone_t *zone, dns_db_t *db) {
 		 * Is this name visible in the zone?
 		 */
 		if (!dns_name_issubdomain(name, &zone->origin) ||
-		    (dns_name_countlabels(bottom) > 0 &&
+		    (!dns_name_empty(bottom) &&
 		     dns_name_issubdomain(name, bottom)))
 		{
 			goto next;
@@ -2638,7 +2641,7 @@ integrity_checks(dns_zone_t *zone, dns_db_t *db) {
 	if (has_a) {
 		has_a = false;
 		result = dns_db_find(db, &zone->origin, NULL, dns_rdatatype_ns,
-				     0, 0, NULL, name, &rdataset, NULL);
+				     0, 0, name, &rdataset, NULL);
 		if (result != ISC_R_SUCCESS) {
 			dns_rdataset_cleanup(&rdataset);
 			goto cleanup;
@@ -2668,7 +2671,7 @@ integrity_checks(dns_zone_t *zone, dns_db_t *db) {
 	if (has_aaaa) {
 		has_aaaa = false;
 		result = dns_db_find(db, &zone->origin, NULL, dns_rdatatype_ns,
-				     0, 0, NULL, name, &rdataset, NULL);
+				     0, 0, name, &rdataset, NULL);
 		if (result != ISC_R_SUCCESS) {
 			dns_rdataset_cleanup(&rdataset);
 			goto cleanup;
@@ -3793,8 +3796,8 @@ addifmissing(dns_keytable_t *keytable, dns_keynode_t *keynode,
 	 */
 	dns_fixedname_init(&fname);
 	result = dns_db_find(db, keyname, ver, dns_rdatatype_keydata,
-			     DNS_DBFIND_NOWILD, 0, NULL,
-			     dns_fixedname_name(&fname), NULL, NULL);
+			     DNS_DBFIND_NOWILD, 0, dns_fixedname_name(&fname),
+			     NULL, NULL);
 	if (result == ISC_R_SUCCESS) {
 		return;
 	}
@@ -4666,7 +4669,7 @@ zone_check_ns(dns_zone_t *zone, dns_db_t *db, dns_dbversion_t *version,
 
 	foundname = dns_fixedname_initname(&fixed);
 
-	result = dns_db_find(db, name, version, dns_rdatatype_a, 0, 0, NULL,
+	result = dns_db_find(db, name, version, dns_rdatatype_a, 0, 0,
 			     foundname, NULL, NULL);
 	if (result == ISC_R_SUCCESS) {
 		return true;
@@ -4674,7 +4677,7 @@ zone_check_ns(dns_zone_t *zone, dns_db_t *db, dns_dbversion_t *version,
 
 	if (result == DNS_R_NXRRSET) {
 		result = dns_db_find(db, name, version, dns_rdatatype_aaaa, 0,
-				     0, NULL, foundname, NULL, NULL);
+				     0, foundname, NULL, NULL);
 		if (result == ISC_R_SUCCESS) {
 			return true;
 		}
@@ -7322,7 +7325,7 @@ zone_nsec3chain(dns_zone_t *zone) {
 			found = dns_fixedname_initname(&ffound);
 			result = dns_db_find(
 				db, name, version, dns_rdatatype_soa,
-				DNS_DBFIND_NOWILD, 0, NULL, found, NULL, NULL);
+				DNS_DBFIND_NOWILD, 0, found, NULL, NULL);
 			if ((result == DNS_R_DELEGATION ||
 			     result == DNS_R_DNAME) &&
 			    !dns_name_equal(name, found))
@@ -7567,7 +7570,7 @@ zone_nsec3chain(dns_zone_t *zone) {
 			found = dns_fixedname_initname(&ffound);
 			result = dns_db_find(
 				db, name, version, dns_rdatatype_soa,
-				DNS_DBFIND_NOWILD, 0, NULL, found, NULL, NULL);
+				DNS_DBFIND_NOWILD, 0, found, NULL, NULL);
 			if ((result == DNS_R_DELEGATION ||
 			     result == DNS_R_DNAME) &&
 			    !dns_name_equal(name, found))
@@ -8335,7 +8338,7 @@ zone_sign(dns_zone_t *zone) {
 			found = dns_fixedname_initname(&ffound);
 			result = dns_db_find(
 				db, name, version, dns_rdatatype_soa,
-				DNS_DBFIND_NOWILD, 0, NULL, found, NULL, NULL);
+				DNS_DBFIND_NOWILD, 0, found, NULL, NULL);
 			if ((result == DNS_R_DELEGATION ||
 			     result == DNS_R_DNAME) &&
 			    !dns_name_equal(name, found))
@@ -11077,6 +11080,11 @@ zone_notify(dns_zone_t *zone, isc_time_t *now) {
 		dns_notify_t *notify = NULL;
 		dns_view_t *view = dns_zone_getview(zone);
 
+		dst = dns_remote_curraddr(&zone->alsonotify);
+		if (isc_sockaddr_disabled(&dst)) {
+			goto next;
+		}
+
 		if (dns_remote_keyname(&zone->alsonotify) != NULL) {
 			dns_name_t *keyname =
 				dns_remote_keyname(&zone->alsonotify);
@@ -11109,21 +11117,8 @@ zone_notify(dns_zone_t *zone, isc_time_t *now) {
 			flags |= DNS_NOTIFY_TCP;
 		}
 
-		/* TODO: glue the transport to the notify */
-
-		dst = dns_remote_curraddr(&zone->alsonotify);
 		src = dns_remote_sourceaddr(&zone->alsonotify);
 		INSIST(isc_sockaddr_pf(&src) == isc_sockaddr_pf(&dst));
-
-		if (isc_sockaddr_disabled(&dst)) {
-			if (key != NULL) {
-				dns_tsigkey_detach(&key);
-			}
-			if (transport != NULL) {
-				dns_transport_detach(&transport);
-			}
-			goto next;
-		}
 
 		if (dns_notify_isqueued(&zone->notifysoa, dns_rdatatype_soa,
 					zone->view->dstport, flags, NULL, &dst,
@@ -17478,6 +17473,7 @@ checkds_send_toaddr(void *arg) {
 	unsigned int options;
 	bool have_checkdssource = false;
 	bool canceled = checkds->rlevent->canceled;
+	isc_tlsctx_cache_t *zmgr_tlsctx_cache = NULL;
 
 	REQUIRE(DNS_CHECKDS_VALID(checkds));
 
@@ -17587,18 +17583,24 @@ checkds_send_toaddr(void *arg) {
 		     "checkds: create request for DS query to %s", addrbuf);
 
 	options |= DNS_REQUESTOPT_TCP;
+
+	dns__zonemgr_tlsctx_attach(checkds->zone->zmgr, &zmgr_tlsctx_cache);
 	const unsigned int connect_timeout = isc_nm_getinitialtimeout() /
 					     MS_PER_SEC;
+
 	result = dns_request_create(
 		checkds->zone->view->requestmgr, message, &src, &checkds->dst,
-		NULL, NULL, options, key, connect_timeout, TCP_REQUEST_TIMEOUT,
-		UDP_REQUEST_TIMEOUT, UDP_REQUEST_RETRIES, checkds->zone->loop,
-		checkds_done, checkds, &checkds->request);
+		checkds->transport, zmgr_tlsctx_cache, options, key,
+		connect_timeout, TCP_REQUEST_TIMEOUT, UDP_REQUEST_TIMEOUT,
+		UDP_REQUEST_RETRIES, checkds->zone->loop, checkds_done, checkds,
+		&checkds->request);
 	if (result != ISC_R_SUCCESS) {
 		dns_zone_log(checkds->zone, ISC_LOG_DEBUG(3),
 			     "checkds: dns_request_create() to %s failed: %s",
 			     addrbuf, isc_result_totext(result));
 	}
+
+	isc_tlsctx_cache_detach(&zmgr_tlsctx_cache);
 
 cleanup_key:
 	if (key != NULL) {
@@ -17655,11 +17657,6 @@ checkds_send_tons(dns_checkds_t *checkds) {
 		default:
 			UNREACHABLE();
 		}
-		/*
-		 * XXXWMM: Should we attach key and transport here?
-		 * Probably not, because we expect the name servers to be
-		 * publicly available on the default transport protocol.
-		 */
 
 		CHECK(isc_ratelimiter_enqueue(newcheckds->zone->zmgr->checkdsrl,
 					      newcheckds->zone->loop,
@@ -17705,6 +17702,11 @@ checkds_send(dns_zone_t *zone) {
 
 		i++;
 
+		dst = dns_remote_curraddr(&zone->parentals);
+		if (isc_sockaddr_disabled(&dst)) {
+			goto next;
+		}
+
 		if (dns_remote_keyname(&zone->parentals) != NULL) {
 			dns_name_t *keyname =
 				dns_remote_keyname(&zone->parentals);
@@ -17714,28 +17716,28 @@ checkds_send(dns_zone_t *zone) {
 		if (dns_remote_tlsname(&zone->parentals) != NULL) {
 			dns_name_t *tlsname =
 				dns_remote_tlsname(&zone->parentals);
-			(void)dns_view_gettransport(view, DNS_TRANSPORT_TLS,
-						    tlsname, &transport);
-			dns_zone_logc(
-				zone, DNS_LOGCATEGORY_XFER_IN, ISC_LOG_INFO,
-				"got TLS configuration for zone transfer");
+			result = dns_view_gettransport(view, DNS_TRANSPORT_TLS,
+						       tlsname, &transport);
+			if (result == ISC_R_SUCCESS) {
+				dns_zone_logc(
+					zone, DNS_LOGCATEGORY_XFER_IN,
+					ISC_LOG_INFO,
+					"got TLS configuration for checkds");
+			} else {
+				dns_zone_logc(zone, DNS_LOGCATEGORY_XFER_IN,
+					      ISC_LOG_ERROR,
+					      "could not get TLS configuration "
+					      "for checkds: %s",
+					      isc_result_totext(result));
+				if (key != NULL) {
+					dns_tsigkey_detach(&key);
+				}
+				goto next;
+			}
 		}
 
-		dst = dns_remote_curraddr(&zone->parentals);
 		src = dns_remote_sourceaddr(&zone->parentals);
 		INSIST(isc_sockaddr_pf(&src) == isc_sockaddr_pf(&dst));
-
-		if (isc_sockaddr_disabled(&dst)) {
-			if (key != NULL) {
-				dns_tsigkey_detach(&key);
-			}
-			if (transport != NULL) {
-				dns_transport_detach(&transport);
-			}
-			goto next;
-		}
-
-		/* TODO: glue the transport to the checkds request */
 
 		if (checkds_isqueued(zone, NULL, &dst, key, transport)) {
 			dns_zone_log(zone, ISC_LOG_DEBUG(3),
@@ -17803,7 +17805,7 @@ nsfetch_start(dns_zonefetch_t *fetch) {
 	nsfetch = &fetch->fetchdata.nsfetch;
 
 	/* Derive parent domain. Check for root domain. */
-	if (dns_name_countlabels(&nsfetch->pname) <= 1U) {
+	if (!dns_name_belowroot(&nsfetch->pname)) {
 		return ISC_R_NOTFOUND;
 	}
 

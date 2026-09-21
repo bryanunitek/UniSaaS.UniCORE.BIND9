@@ -201,7 +201,7 @@ struct qpznode {
 	isc_refcount_t references;
 	isc_refcount_t erefs;
 
-	_Atomic(dns_namespace_t) nspace;
+	/* const */ dns_namespace_t nspace;
 	atomic_bool havensec;
 	atomic_bool wild;
 	atomic_bool delegating;
@@ -212,9 +212,9 @@ struct qpznode {
 
 struct qpzonedb {
 	/* Unlocked. */
-	dns_db_t common;
+	alignas(ISC_OS_CACHELINE_SIZE) dns_db_t common;
 	/* Locks the data in this struct */
-	isc_rwlock_t lock;
+	alignas(ISC_OS_CACHELINE_SIZE) isc_rwlock_t lock;
 
 	/*
 	 * NOTE: 'references' is NOT the global reference counter for
@@ -263,9 +263,13 @@ typedef struct {
 	uint32_t serial;
 	unsigned int options;
 	dns_qpchain_t chain;
+	/*
+	 * Index of the origin node in 'chain'.  The nodes before it are
+	 * above the zone and must not be looked at.
+	 */
+	unsigned int chain_base;
 	dns_qpiter_t iter;
 	bool copy_name;
-	bool need_cleanup;
 	bool wild;
 	qpznode_t *zonecut;
 	dns_vecheader_t *zonecut_header;
@@ -580,7 +584,8 @@ free_db_rcu(struct rcu_head *rcu_head) {
 		INSIST(!cds_lfht_destroy(qpdb->common.update_listeners, NULL));
 	}
 
-	isc_mem_putanddetach(&qpdb->common.mctx, qpdb, sizeof(*qpdb));
+	isc_mem_putanddetachx(&qpdb->common.mctx, qpdb, sizeof(*qpdb),
+			      ISC_MEM_ALIGN(ISC_OS_CACHELINE_SIZE));
 }
 
 static void
@@ -864,7 +869,8 @@ dns__qpzone_create(isc_mem_t *mctx, const dns_name_t *origin, dns_dbtype_t type,
 	isc_result_t result;
 	dns_qp_t *qp = NULL;
 
-	qpdb = isc_mem_get(mctx, sizeof(*qpdb));
+	qpdb = isc_mem_getx(mctx, sizeof(*qpdb),
+			    ISC_MEM_ALIGN(ISC_OS_CACHELINE_SIZE));
 	*qpdb = (qpzonedb_t){
 		.common.origin = DNS_NAME_INITEMPTY,
 		.common.rdclass = rdclass,
@@ -974,11 +980,9 @@ qpznode_erefs_increment(qpznode_t *node DNS__DB_FLARG) {
 #if DNS_DB_NODETRACE
 	fprintf(stderr, "incr:node:%s:%s:%u:%p->erefs = %" PRIuFAST32 "\n",
 		func, file, line, node, refs + 1);
+#else
+	UNUSED(refs);
 #endif
-
-	if (refs > 0) {
-		return;
-	}
 }
 
 static void
@@ -2213,6 +2217,10 @@ loading_addrdataset(void *arg, const dns_name_t *name, dns_rdataset_t *rdataset,
 
 	REQUIRE(rdataset->rdclass == qpdb->common.rdclass);
 
+	if (!dns_name_issubdomain(name, &qpdb->common.origin)) {
+		return DNS_R_OUTOFZONE;
+	}
+
 	/*
 	 * SOA records are only allowed at top of zone.
 	 */
@@ -2629,6 +2637,10 @@ findnodeintree(qpzonedb_t *qpdb, dns_qp_t *qp, const dns_name_t *name,
 
 		INSIST(node->nspace == DNS_DBNAMESPACE_NSEC3 || !nsec3);
 	} else if (result != ISC_R_SUCCESS && create) {
+		if (!dns_name_issubdomain(name, &qpdb->common.origin)) {
+			return DNS_R_OUTOFZONE;
+		}
+
 		/*
 		 * ... if the lookup is unsuccessful, but the caller asked us to
 		 * create a new node, create one and insert it into the tree.
@@ -2741,8 +2753,8 @@ matchparams(dns_vecheader_t *header, qpz_search_t *search) {
 }
 
 static isc_result_t
-qpzone_setup_delegation(qpz_search_t *search, dns_dbnode_t **nodep,
-			dns_name_t *foundname, dns_rdataset_t *rdataset,
+qpzone_setup_delegation(qpz_search_t *search, dns_name_t *foundname,
+			dns_rdataset_t *rdataset,
 			dns_rdataset_t *sigrdataset DNS__DB_FLARG) {
 	dns_name_t *zcname = NULL;
 	dns_typepair_t typepair;
@@ -2769,15 +2781,6 @@ qpzone_setup_delegation(qpz_search_t *search, dns_dbnode_t **nodep,
 	if (foundname != NULL && search->copy_name) {
 		zcname = dns_fixedname_name(&search->zonecut_name);
 		dns_name_copy(zcname, foundname);
-	}
-	if (nodep != NULL) {
-		/*
-		 * Note that we don't have to increment the node's reference
-		 * count here because we're going to use the reference we
-		 * already have in the search block.
-		 */
-		*nodep = (dns_dbnode_t *)node;
-		search->need_cleanup = false;
 	}
 	if (rdataset != NULL) {
 		isc_rwlocktype_t nlocktype = isc_rwlocktype_none;
@@ -2963,7 +2966,9 @@ find_wildcard(qpz_search_t *search, qpznode_t **nodep, const dns_name_t *qname,
 	 * can be no possible wildcard match and again we're done.  If not,
 	 * continue the search.
 	 */
-	for (int i = dns_qpchain_length(&search->chain) - 1; i >= 0; i--) {
+	for (int i = dns_qpchain_length(&search->chain) - 1;
+	     i >= (int)search->chain_base; i--)
+	{
 		qpznode_t *node = NULL;
 		isc_rwlock_t *nlock = NULL;
 		isc_rwlocktype_t nlocktype = isc_rwlocktype_none;
@@ -3054,6 +3059,31 @@ find_wildcard(qpz_search_t *search, qpznode_t **nodep, const dns_name_t *qname,
 }
 
 /*
+ * The database may contain nodes outside the zone (out-of-zone data
+ * loaded from a secondary zone file or a journal), and the iterator does
+ * not stop at namespace boundaries, so the walks through the predecessors
+ * of a name must know where the zone ends.
+ *
+ * Within a namespace the nodes of the zone form a contiguous block that
+ * starts at the origin node of that namespace, so a walk backwards leaves
+ * the zone exactly when it steps back from that node; this is a pointer
+ * comparison.  Only a walk that starts from the end of the trie has to
+ * look at the names to skip the nodes that sort after the zone.
+ */
+static isc_result_t
+prev_in_zone(dns_qpiter_t *it, qpznode_t *first, qpznode_t **nodep) {
+	qpznode_t *current = NULL;
+	isc_result_t result;
+
+	result = dns_qpiter_current(it, (void **)&current, NULL);
+	if (result == ISC_R_SUCCESS && current == first) {
+		return ISC_R_NOMORE;
+	}
+
+	return dns_qpiter_prev(it, (void **)nodep, NULL);
+}
+
+/*
  * Find node of the NSEC/NSEC3 record preceding 'name'.
  */
 static isc_result_t
@@ -3066,7 +3096,8 @@ previous_closest_nsec(dns_rdatatype_t type, qpz_search_t *search,
 	REQUIRE(type == dns_rdatatype_nsec3 || firstp != NULL);
 
 	if (type == dns_rdatatype_nsec3) {
-		result = dns_qpiter_prev(&search->iter, (void **)nodep, NULL);
+		result = prev_in_zone(&search->iter, search->qpdb->nsec3_origin,
+				      nodep);
 		if (result == ISC_R_SUCCESS) {
 			dns_name_copy(&(*nodep)->name, name);
 		}
@@ -3096,8 +3127,9 @@ previous_closest_nsec(dns_rdatatype_t type, qpz_search_t *search,
 				 * NSEC record; we want the previous node
 				 * in the NSEC tree.
 				 */
-				result = dns_qpiter_prev(
-					nit, (void **)&nsec_node, NULL);
+				result = prev_in_zone(nit,
+						      search->qpdb->nsec_origin,
+						      &nsec_node);
 			} else if (result == DNS_R_PARTIALMATCH) {
 				/*
 				 * This was a partial match, so the
@@ -3118,8 +3150,8 @@ previous_closest_nsec(dns_rdatatype_t type, qpz_search_t *search,
 			 * work; perhaps they lacked signature records.
 			 * Keep searching.
 			 */
-			result = dns_qpiter_prev(nit, (void **)&nsec_node,
-						 NULL);
+			result = prev_in_zone(nit, search->qpdb->nsec_origin,
+					      &nsec_node);
 		}
 
 		if (result != ISC_R_SUCCESS) {
@@ -3154,16 +3186,38 @@ previous_closest_nsec(dns_rdatatype_t type, qpz_search_t *search,
 	return result;
 }
 
+static isc_result_t
+wrap_nsec3(qpz_search_t *search, qpznode_t **nodep) {
+	dns_qpiter_init(&search->qpr, &search->iter);
+	while (true) {
+		isc_result_t result = dns_qpiter_prev(&search->iter,
+						      (void **)nodep, NULL);
+		if (result != ISC_R_SUCCESS) {
+			return result;
+		}
+
+		if ((*nodep)->nspace != DNS_DBNAMESPACE_NSEC3) {
+			return ISC_R_NOMORE;
+		}
+
+		if (dns_name_issubdomain(&(*nodep)->name,
+					 &search->qpdb->common.origin))
+		{
+			return ISC_R_SUCCESS;
+		}
+	}
+	UNREACHABLE();
+}
+
 /*
  * Find the NSEC/NSEC3 which is at or before the name being sought.
  * For NSEC3 records only NSEC3 records that match the
  * current NSEC3PARAM record are considered.
  */
 static isc_result_t
-find_closest_nsec(qpz_search_t *search, dns_dbnode_t **nodep,
-		  dns_name_t *foundname, dns_rdataset_t *rdataset,
-		  dns_rdataset_t *sigrdataset, bool nsec3,
-		  bool secure DNS__DB_FLARG) {
+find_closest_nsec(qpz_search_t *search, dns_name_t *foundname,
+		  dns_rdataset_t *rdataset, dns_rdataset_t *sigrdataset,
+		  bool nsec3, bool secure DNS__DB_FLARG) {
 	qpznode_t *node = NULL, *prevnode = NULL;
 	dns_qpiter_t nseciter;
 	bool empty_node;
@@ -3248,11 +3302,6 @@ again:
 				 * the case.
 				 */
 				dns_name_copy(name, foundname);
-				if (nodep != NULL) {
-					qpznode_acquire(
-						node DNS__DB_FLARG_PASS);
-					*nodep = (dns_dbnode_t *)node;
-				}
 				bindrdataset(search->qpdb, found,
 					     rdataset DNS__DB_FLARG_PASS);
 				if (foundsig != NULL) {
@@ -3290,12 +3339,16 @@ again:
 						       &first);
 		}
 		NODE_UNLOCK(nlock, &nlocktype);
-		node = prevnode;
-		prevnode = NULL;
+		node = MOVE_OWNERSHIP(prevnode);
 	} while (empty_node && result == ISC_R_SUCCESS);
 
 	if (result == ISC_R_NOMORE && wraps) {
-		result = dns_qpiter_prev(&search->iter, (void **)&node, NULL);
+		/*
+		 * Start over from the last node of the zone in the NSEC3
+		 * namespace, skipping any nodes that sort after it.
+		 */
+		result = wrap_nsec3(search, &node);
+
 		if (result == ISC_R_SUCCESS) {
 			dns_name_copy(&node->name, name);
 			wraps = false;
@@ -3385,7 +3438,6 @@ qpzone_check_zonecut(qpznode_t *node, void *arg DNS__DB_FLARG) {
 		qpznode_acquire(node DNS__DB_FLARG_PASS);
 		search->zonecut = node;
 		search->zonecut_header = found;
-		search->need_cleanup = true;
 		/*
 		 * Since we've found a zonecut, anything beneath it is
 		 * glue and is not subject to wildcard matching, so we
@@ -3450,8 +3502,8 @@ qpz_search_init(qpz_search_t *search, qpzonedb_t *db, qpz_version_t *version,
 	 * qpch->in -- init in dns_qp_lookup
 	 * qpiter -- init in dns_qp_lookup
 	 */
+	search->chain_base = 0;
 	search->copy_name = false;
-	search->need_cleanup = false;
 	search->wild = false;
 	search->zonecut = NULL;
 	search->zonecut_header = NULL;
@@ -3459,11 +3511,40 @@ qpz_search_init(qpz_search_t *search, qpzonedb_t *db, qpz_version_t *version,
 	dns_fixedname_init(&search->zonecut_name);
 }
 
+/*
+ * Find the origin node of the namespace being searched in the search
+ * chain and remember its index.
+ *
+ * The database may contain nodes above its origin (out-of-zone data
+ * loaded from a secondary zone file or a journal).  They come before the
+ * origin in the chain and are not part of the zone, so they must not act
+ * as zone cuts, wildcard parents or closest enclosers for the names
+ * inside it: the chain is only used from 'chain_base' on.
+ *
+ * Returns false if the origin is not in the chain, which means that the
+ * name being looked up is not in the zone at all.
+ */
+static bool
+qpz_search_setbase(qpz_search_t *search, qpznode_t *origin) {
+	unsigned int len = dns_qpchain_length(&search->chain);
+
+	for (unsigned int i = 0; i < len; i++) {
+		qpznode_t *node = NULL;
+
+		dns_qpchain_node(&search->chain, i, (void **)&node, NULL);
+		if (node == origin) {
+			search->chain_base = i;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static isc_result_t
 qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 	    dns_rdatatype_t type, unsigned int options,
-	    isc_stdtime_t now ISC_ATTR_UNUSED, dns_dbnode_t **nodep,
-	    dns_name_t *foundname,
+	    isc_stdtime_t now ISC_ATTR_UNUSED, dns_name_t *foundname,
 	    dns_clientinfomethods_t *methods ISC_ATTR_UNUSED,
 	    dns_clientinfo_t *clientinfo ISC_ATTR_UNUSED,
 	    dns_rdataset_t *rdataset,
@@ -3472,7 +3553,7 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 	qpzonedb_t *qpdb = (qpzonedb_t *)db;
 	qpznode_t *node = NULL;
 	bool cname_ok = true, close_version = false;
-	bool maybe_zonecut = false, at_zonecut = false;
+	bool maybe_zonecut = false;
 	bool wild = false, empty_node = false;
 	bool nsec3 = false;
 	dns_vecheader_t *found = NULL, *nsecheader = NULL;
@@ -3513,9 +3594,14 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 	 */
 	result = dns_qp_lookup(&search.qpr, name, nspace, &search.iter,
 			       &search.chain, (void **)&node, NULL);
-	if (result != ISC_R_NOTFOUND) {
-		dns_name_copy(&node->name, foundname);
+	if (!qpz_search_setbase(&search,
+				nsec3 ? qpdb->nsec3_origin : qpdb->origin))
+	{
+		/* The name is not in the zone. */
+		result = ISC_R_NOTFOUND;
+		goto tree_exit;
 	}
+	dns_name_copy(&node->name, foundname);
 
 	/*
 	 * Check the QP chain to see if there's a node above us with a
@@ -3528,7 +3614,9 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 	if (result == ISC_R_SUCCESS) {
 		clen--;
 	}
-	for (unsigned int i = 0; i < clen && search.zonecut == NULL; i++) {
+	for (unsigned int i = search.chain_base;
+	     i < clen && search.zonecut == NULL; i++)
+	{
 		qpznode_t *n = NULL;
 		isc_result_t tresult;
 
@@ -3536,7 +3624,6 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 		tresult = qpzone_check_zonecut(n, &search DNS__DB_FLARG_PASS);
 		if (tresult != DNS_R_CONTINUE) {
 			result = tresult;
-			search.chain.len = i - 1;
 			dns_name_copy(&n->name, foundname);
 			node = n;
 		}
@@ -3546,7 +3633,7 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 	partial_match:
 		if (search.zonecut != NULL) {
 			result = qpzone_setup_delegation(
-				&search, nodep, foundname, rdataset,
+				&search, foundname, rdataset,
 				sigrdataset DNS__DB_FLARG_PASS);
 			goto tree_exit;
 		}
@@ -3560,7 +3647,7 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 			 */
 			result = find_wildcard(&search, &node, name, nspace);
 			if (result == ISC_R_SUCCESS) {
-				dns_name_copy(name, foundname);
+				dns_name_copy(&node->name, foundname);
 				wild = true;
 				goto found;
 			} else if (result != ISC_R_NOTFOUND) {
@@ -3586,8 +3673,8 @@ qpzone_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
 		    nsec3)
 		{
 			result = find_closest_nsec(
-				&search, nodep, foundname, rdataset,
-				sigrdataset, nsec3,
+				&search, foundname, rdataset, sigrdataset,
+				nsec3,
 				search.version->secure DNS__DB_FLARG_PASS);
 			if (result == ISC_R_SUCCESS) {
 				result = active ? DNS_R_EMPTYNAME
@@ -3680,9 +3767,7 @@ found:
 				search.zonecut = node;
 				search.zonecut_header = header;
 				search.zonecut_sigheader = NULL;
-				search.need_cleanup = true;
 				maybe_zonecut = false;
-				at_zonecut = true;
 
 				if ((search.options & DNS_DBFIND_GLUEOK) == 0 &&
 				    type != dns_rdatatype_nsec)
@@ -3806,7 +3891,7 @@ found:
 		 */
 		if (!wild) {
 			unsigned int len = search.chain.len - 1;
-			if (len > 0) {
+			if (len > search.chain_base) {
 				NODE_UNLOCK(nlock, &nlocktype);
 				dns_qpchain_node(&search.chain, len - 1,
 						 (void **)&node, NULL);
@@ -3827,9 +3912,12 @@ found:
 			 *
 			 * Return the delegation.
 			 */
+			if (wild) {
+				foundname->attributes.wildcard = true;
+			}
 			NODE_UNLOCK(nlock, &nlocktype);
 			result = qpzone_setup_delegation(
-				&search, nodep, foundname, rdataset,
+				&search, foundname, rdataset,
 				sigrdataset DNS__DB_FLARG_PASS);
 			goto tree_exit;
 		}
@@ -3851,17 +3939,13 @@ found:
 
 			NODE_UNLOCK(nlock, &nlocktype);
 			result = find_closest_nsec(
-				&search, nodep, foundname, rdataset,
-				sigrdataset, false,
+				&search, foundname, rdataset, sigrdataset,
+				false,
 				search.version->secure DNS__DB_FLARG_PASS);
 			if (result == ISC_R_SUCCESS) {
 				result = DNS_R_EMPTYWILD;
 			}
 			goto tree_exit;
-		}
-		if (nodep != NULL) {
-			qpznode_acquire(node DNS__DB_FLARG_PASS);
-			*nodep = (dns_dbnode_t *)node;
 		}
 		if (search.version->secure && !search.version->havensec3) {
 			bindrdataset(search.qpdb, nsecheader,
@@ -3913,15 +3997,6 @@ found:
 		result = ISC_R_SUCCESS;
 	}
 
-	if (nodep != NULL) {
-		if (!at_zonecut) {
-			qpznode_acquire(node DNS__DB_FLARG_PASS);
-		} else {
-			search.need_cleanup = false;
-		}
-		*nodep = (dns_dbnode_t *)node;
-	}
-
 	if (type != dns_rdatatype_any) {
 		bindrdataset(search.qpdb, found, rdataset DNS__DB_FLARG_PASS);
 		if (foundsig != NULL) {
@@ -3944,7 +4019,7 @@ tree_exit:
 	 * If we found a zonecut but aren't going to use it, we have to
 	 * let go of it.
 	 */
-	if (search.need_cleanup) {
+	if (search.zonecut != NULL) {
 		node = search.zonecut;
 		INSIST(node != NULL);
 		nlock = qpzone_get_lock(node);
@@ -5241,7 +5316,7 @@ glue_nsdname_cb(void *arg, const dns_name_t *name, dns_rdatatype_t qtype,
 	dns_rdataset_init(&sigrdataset_aaaa);
 
 	result = qpzone_find(ctx->db, name, ctx->version, dns_rdatatype_a,
-			     DNS_DBFIND_GLUEOK, 0, NULL, name_a, NULL, NULL,
+			     DNS_DBFIND_GLUEOK, 0, name_a, NULL, NULL,
 			     &rdataset_a, &sigrdataset_a DNS__DB_FLARG_PASS);
 	if (result == DNS_R_GLUE) {
 		glue = new_glue(ctx->db->mctx, name_a);
@@ -5258,7 +5333,7 @@ glue_nsdname_cb(void *arg, const dns_name_t *name, dns_rdatatype_t qtype,
 	}
 
 	result = qpzone_find(ctx->db, name, ctx->version, dns_rdatatype_aaaa,
-			     DNS_DBFIND_GLUEOK, 0, NULL, name_aaaa, NULL, NULL,
+			     DNS_DBFIND_GLUEOK, 0, name_aaaa, NULL, NULL,
 			     &rdataset_aaaa,
 			     &sigrdataset_aaaa DNS__DB_FLARG_PASS);
 	if (result == DNS_R_GLUE) {
@@ -5421,16 +5496,19 @@ create_gluelist(qpzonedb_t *qpdb, qpz_version_t *version,
 
 static void
 addglue(dns_db_t *db, dns_dbversion_t *dbversion, const dns_name_t *owner_name,
-	dns_rdataset_t *rdataset, dns_message_t *msg) {
+	dns_rdataset_t *rdataset, dns_message_t *msg,
+	dns_clientinfomethods_t *methods, dns_clientinfo_t *clientinfo) {
 	qpzonedb_t *qpdb = (qpzonedb_t *)db;
 	qpz_version_t *version = (qpz_version_t *)dbversion;
 	dns_vecheader_t *header = dns_vecheader_getheader(rdataset);
 	dns_glue_t *glue = NULL;
 	isc_statscounter_t counter = dns_gluecachestatscounter_hits_absent;
 
+	UNUSED(methods);
+	UNUSED(clientinfo);
+
 	REQUIRE(rdataset->type == dns_rdatatype_ns);
 	REQUIRE(qpdb == version->qpdb);
-	REQUIRE(!IS_STUB(qpdb));
 
 	rcu_read_lock();
 
@@ -5472,7 +5550,11 @@ addglue(dns_db_t *db, dns_dbversion_t *dbversion, const dns_name_t *owner_name,
 
 	rcu_read_unlock();
 
-	/* We have a cached result. Add it to the message and return. */
+	/*
+	 * Stub zones also use the qpzone glue cache above, but zone.c only
+	 * attaches glue cache stats to primary, secondary, and mirror zones.
+	 * A NULL stats object is expected for stub zones.
+	 */
 	if (qpdb->gluecachestats != NULL) {
 		isc_stats_increment(qpdb->gluecachestats, counter);
 	}

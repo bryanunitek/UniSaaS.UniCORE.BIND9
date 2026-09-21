@@ -36,11 +36,17 @@ confidential!
 
 ## CVE Checklist
 
-### Before Code Freeze
+### ASAP
 
+  - [ ] [:grey_question:][step_emergency]         **(SwEng)** Consider invoking the emergency procedures
+  - [ ] [:grey_question:][step_oper_notification] **(SwEng)** Consider if we need Operational Notification
+  - [ ] [:grey_question:][step_zulip]             **(SwEng)** Create a dedicated Zulip Topic
   - [ ] [:grey_question:][step_respond]           **(SwEng)** Respond to the bug reporter
   - [ ] [:grey_question:][step_public_mrs]        **(SwEng)** Ensure there are no public merge requests which inadvertently disclose the issue
   - [ ] [:grey_question:][step_coordinate_cve_id] **(SwEng)** Check if we need to coordinate with other vendors (an industry-wide CVE identifier might be necessary)
+
+### Before Code Freeze
+
   - [ ] [:grey_question:][step_assign_cve_id]     **(SwEng)** Assign a CVE identifier, and update the GitLab Issue with it
   - [ ] [:grey_question:][step_note_cve_info]     **(SwEng)** Determine CVSS score and CWE category, and update the GitLab Issue with them
   - [ ] [:grey_question:][step_versions_affected] **(SwEng)** Determine product branches/versions affected
@@ -82,9 +88,9 @@ confidential!
 ### On the Day of Public Disclosure
 
   - [ ] [:grey_question:][step_clearance]         **(SwEng)** Grant QA & Marketing clearance to proceed with public release
-  - [ ] [:grey_question:][step_matrix]            **(Support)** (BIND 9 only) Add the new CVEs to the vulnerability matrix in the Knowledge Base
   - [ ] [:grey_question:][step_bump_advisory]     **(Support)** Bump Document Version for the Security Advisory in Printing Press
-  - [ ] [:grey_question:][step_publish_advisory]  **(Support)** Publish the Security Advisory in the Knowledge Base
+  - [ ] [:grey_question:][step_publish_advisory]  **(Support)** Knowledge Base: Publish the Security Advisory as a new article
+  - [ ] [:grey_question:][step_matrix]            **(Support)** Knowledge Base: Add the CVE to the full list and (for BIND) the matrix
   - [ ] [:grey_question:][step_publish]           **(QA/Marketing)** Publish the releases (as outlined in the release checklist)
   - [ ] [:grey_question:][step_notifications]     **(First IM)** Send notification emails to third parties
   - [ ] [:grey_question:][step_mitre]             **(First IM)** Advise MITRE about the disclosed CVEs
@@ -94,6 +100,9 @@ confidential!
   - [ ] [:grey_question:][step_customers]         **(Marketing)** Ensure that a ticket has been sent in the appropriate announce queue in RT to notify customers that the release is published (as outlined in the release checklist)
 
 [step_incident_manager]:  https://gitlab.isc.org/isc-private/bind9/-/wikis/Initial-Handling-of-(Potential)-Security-Issues
+[step_emergency]:         https://gitlab.isc.org/isc-private/bind9/-/wikis/In-Case-of-Emergency
+[step_oper_notification]: https://gitlab.isc.org/isc-private/isc-wiki/-/wikis/Security-Incident-Handling-Checklist-Explanations#consider-if-we-need-operational-notification
+[step_zulip]:             https://gitlab.isc.org/isc-private/bind9/-/wikis/In-Case-of-Emergency#create-a-dedicated-zulip-topic
 [step_respond]:           https://gitlab.isc.org/isc-private/isc-wiki/-/wikis/Security-Incident-Handling-Checklist-Explanations#respond-to-the-bug-reporter
 [step_public_mrs]:        https://gitlab.isc.org/isc-private/isc-wiki/-/wikis/Security-Incident-Handling-Checklist-Explanations#ensure-there-are-no-public-merge-requests-which-inadvertently-disclose-the-issue
 [step_coordinate_cve_id]: https://gitlab.isc.org/isc-private/isc-wiki/-/wikis/Security-Incident-Handling-Checklist-Explanations#check-if-we-need-to-coordinate-with-other-vendors-an-industry-wide-cve-identifier-might-be-necessary

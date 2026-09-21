@@ -111,7 +111,7 @@ struct dns_name {
 		bool update	  : 1; /*%< Used by client. */
 		bool hasupdaterec : 1; /*%< Used by client. */
 	} attributes;
-	unsigned char *ndata;
+	unsigned char *ndata ISC_ATTR_COUNTED_BY_PTR(length);
 	isc_buffer_t  *buffer;
 	ISC_LINK(dns_name_t) link;
 	ISC_LIST(dns_rdataset_t) list;
@@ -589,6 +589,20 @@ dns_name_offsets(const dns_name_t *name, dns_offsets_t offsets);
  * Note:
  *\li	if the 'offsets' is non-NULL, it will fill the offsets of
  *	individual labels in the name
+ */
+
+static inline bool
+dns_name_empty(const dns_name_t *name) {
+	REQUIRE(DNS_NAME_VALID(name));
+
+	return name->length == 0;
+}
+/*%<
+ * Return whether the name is empty.
+ *
+ * Requires:
+ * \li	'name' is a valid name
+ *
  */
 
 static inline uint8_t
@@ -1360,6 +1374,33 @@ dns_name_israd(const dns_name_t *name, const dns_name_t *rad);
  * AGENT-DOMAIN is specified by the 'rad' parameter.
  * EDE is a numeric value representing an extended DNS error code.
  * TYPE and EDE are not currently checked.
+ *
+ * Requires:
+ * \li	'name' to be valid.
+ */
+
+static inline bool
+dns_name_isroot(const dns_name_t *name) {
+	REQUIRE(DNS_NAME_VALID(name));
+
+	return name->length == 1 && name->ndata[0] == 0;
+}
+/*%<
+ * Return whether 'name' is the root name.
+ *
+ * Requires:
+ * \li	'name' to be valid.
+ */
+
+static inline bool
+dns_name_belowroot(const dns_name_t *name) {
+	REQUIRE(DNS_NAME_VALID(name));
+
+	return name->length != 0 && name->ndata[0] != 0;
+}
+/*%<
+ * Return whether 'name' is below root.  It checks whether there's at least one
+ * non-root label.
  *
  * Requires:
  * \li	'name' to be valid.

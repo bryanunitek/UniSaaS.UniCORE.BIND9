@@ -1388,8 +1388,8 @@ check_options(const cfg_obj_t *options, const cfg_obj_t *config,
 						    DNS_KEYSTORE_KEYDIRECTORY);
 					if (result == ISC_R_SUCCESS) {
 						result = ISC_R_FAILURE;
-						continue;
 					}
+					continue;
 				}
 
 				kopt = cfg_tuple_get(kconfig, "options");
@@ -2218,9 +2218,11 @@ check_httpserver(const cfg_obj_t *http, isc_symtab_t *symtab) {
 	/* Check endpoints are valid */
 	tresult = cfg_map_get(http, "endpoints", &eps);
 	if (tresult == ISC_R_SUCCESS) {
+		bool empty = true;
 		CFG_LIST_FOREACH(eps, elt) {
 			const cfg_obj_t *ep = cfg_listelt_value(elt);
 			const char *path = cfg_obj_asstring(ep);
+			empty = false;
 			if (!isc_nm_http_path_isvalid(path)) {
 				cfg_obj_log(eps, ISC_LOG_ERROR,
 					    "endpoint '%s' is not a "
@@ -2229,6 +2231,13 @@ check_httpserver(const cfg_obj_t *http, isc_symtab_t *symtab) {
 				if (result == ISC_R_SUCCESS) {
 					result = ISC_R_FAILURE;
 				}
+			}
+		}
+		if (empty) {
+			cfg_obj_log(eps, ISC_LOG_ERROR,
+				    "empty 'endpoints' entry");
+			if (result == ISC_R_SUCCESS) {
+				result = ISC_R_FAILURE;
 			}
 		}
 	}
@@ -2522,9 +2531,8 @@ validate_remotes_key(const cfg_obj_t *voptions, const cfg_obj_t *config,
 		if (result != ISC_R_SUCCESS) {
 			cfg_obj_log(key, ISC_LOG_ERROR,
 				    "'%s' is not a valid name", str);
-		}
-
-		if (!lookup_key(voptions, nm)) {
+			result = ISC_R_FAILURE;
+		} else if (!lookup_key(voptions, nm)) {
 			if (!lookup_key(config, nm)) {
 				cfg_obj_log(key, ISC_LOG_ERROR,
 					    "key '%s' is not defined",
@@ -2739,7 +2747,7 @@ check_update_policy(const cfg_obj_t *policy) {
 		case dns_ssumatchtype_selfwild:
 			if (tresult == ISC_R_SUCCESS &&
 			    (!dns_name_equal(id, name) &&
-			     !dns_name_equal(dns_rootname, name)))
+			     !dns_name_isroot(name)))
 			{
 				cfg_obj_log(identity, ISC_LOG_ERROR,
 					    "identity and name fields are not "
@@ -2753,8 +2761,7 @@ check_update_policy(const cfg_obj_t *policy) {
 		case dns_ssumatchtype_selfsubms:
 		case dns_ssumatchtype_tcpself:
 		case dns_ssumatchtype_6to4self:
-			if (tresult == ISC_R_SUCCESS &&
-			    !dns_name_equal(dns_rootname, name))
+			if (tresult == ISC_R_SUCCESS && !dns_name_isroot(name))
 			{
 				cfg_obj_log(identity, ISC_LOG_ERROR,
 					    "name field not set to "
@@ -3483,7 +3490,7 @@ isccfg_check_zoneconf(const cfg_obj_t *zconfig, const cfg_obj_t *voptions,
 		if (tresult != ISC_R_SUCCESS) {
 			result = tresult;
 		}
-		if (dns_name_equal(zname, dns_rootname)) {
+		if (dns_name_isroot(zname)) {
 			root = true;
 		} else if (dns_name_isrfc1918(zname)) {
 			rfc1918 = true;
@@ -3800,7 +3807,7 @@ isccfg_check_zoneconf(const cfg_obj_t *zconfig, const cfg_obj_t *voptions,
 	 */
 	if (ztype == CFG_ZONE_SECONDARY || ztype == CFG_ZONE_STUB ||
 	    (ztype == CFG_ZONE_MIRROR && zname != NULL &&
-	     !dns_name_equal(zname, dns_rootname)))
+	     !dns_name_isroot(zname)))
 	{
 		obj = NULL;
 		(void)get_zoneopt(zoptions, toptions, NULL, NULL, "primaries",
@@ -4176,7 +4183,7 @@ isccfg_check_zoneconf(const cfg_obj_t *zconfig, const cfg_obj_t *voptions,
 		(void)get_zoneopt(zoptions, toptions, NULL, NULL,
 				  "log-report-channel", &obj);
 		if (obj != NULL && cfg_obj_asboolean(obj) &&
-		    dns_name_equal(zname, dns_rootname))
+		    dns_name_isroot(zname))
 		{
 			cfg_obj_log(zconfig, ISC_LOG_ERROR,
 				    "'log-report-channel' cannot be set in "
@@ -4217,8 +4224,9 @@ isccfg_check_zoneconf(const cfg_obj_t *zconfig, const cfg_obj_t *voptions,
 		if (result == ISC_R_SUCCESS) {
 			result = ISC_R_FAILURE;
 		}
-	} else if (!dlz && (obj == NULL ||
-			    strcmp(ZONEDB_DEFAULT, cfg_obj_asstring(obj)) == 0))
+	} else if (zname != NULL && !dlz &&
+		   (obj == NULL ||
+		    strcmp(ZONEDB_DEFAULT, cfg_obj_asstring(obj)) == 0))
 	{
 		const cfg_obj_t *fileobj = NULL;
 		(void)get_zoneopt(zoptions, toptions, NULL, NULL, "file",
@@ -5091,9 +5099,7 @@ check_trust_anchor(const cfg_obj_t *key, unsigned int *flagsp) {
 			}
 		}
 
-		if (result == ISC_R_SUCCESS &&
-		    dns_name_equal(keyname, dns_rootname))
-		{
+		if (result == ISC_R_SUCCESS && dns_name_isroot(keyname)) {
 			/*
 			 * Flag any use of a root key, regardless of content.
 			 */
@@ -5148,9 +5154,7 @@ check_trust_anchor(const cfg_obj_t *key, unsigned int *flagsp) {
 				    isc_result_totext(tresult));
 			result = ISC_R_FAILURE;
 		}
-		if (result == ISC_R_SUCCESS &&
-		    dns_name_equal(keyname, dns_rootname))
-		{
+		if (result == ISC_R_SUCCESS && dns_name_isroot(keyname)) {
 			/*
 			 * Flag any use of a root key, regardless of content.
 			 */
@@ -5233,7 +5237,7 @@ record_static_keys(isc_symtab_t *symtab, isc_mem_t *mctx,
 			isc_mem_free(mctx, p);
 		}
 
-		if (autovalidation && dns_name_equal(name, dns_rootname)) {
+		if (autovalidation && dns_name_isroot(name)) {
 			cfg_obj_log(obj, ISC_LOG_ERROR,
 				    "static trust anchor for root zone "
 				    "cannot be used with "

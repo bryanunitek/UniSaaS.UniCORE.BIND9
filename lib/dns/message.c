@@ -1177,7 +1177,7 @@ getsection(isc_buffer_t *source, dns_message_t *msg, dns_decompress_t dctx,
 			 * must be in the additional data section, and
 			 * it must be the first OPT we've seen.
 			 */
-			if (!dns_name_equal(dns_rootname, name) ||
+			if (!dns_name_isroot(name) ||
 			    sectionid != DNS_SECTION_ADDITIONAL ||
 			    msg->opt != NULL)
 			{
@@ -1275,7 +1275,7 @@ getsection(isc_buffer_t *source, dns_message_t *msg, dns_decompress_t dctx,
 			if (covers == dns_rdatatype_none) {
 				if (sectionid != DNS_SECTION_ADDITIONAL ||
 				    count != msg->counts[sectionid] - 1 ||
-				    !dns_name_equal(name, dns_rootname))
+				    !dns_name_isroot(name))
 				{
 					DO_ERROR(DNS_R_BADSIG0);
 				} else {
@@ -1440,6 +1440,9 @@ getsection(isc_buffer_t *source, dns_message_t *msg, dns_decompress_t dctx,
 				if (dns_rdata_compare(rdata, first) != 0) {
 					DO_ERROR(DNS_R_FORMERR);
 				}
+				if (!best_effort) {
+					dns_message_puttemprdata(msg, &rdata);
+				}
 				break;
 			case ISC_R_SUCCESS:
 				ISC_LIST_APPEND(name->list, rdataset, link);
@@ -1465,8 +1468,10 @@ getsection(isc_buffer_t *source, dns_message_t *msg, dns_decompress_t dctx,
 		}
 
 		/* Append this rdata to the rdataset. */
-		dns_rdatalist_fromrdataset(rdataset, &rdatalist);
-		ISC_LIST_APPEND(rdatalist->rdata, rdata, link);
+		if (rdata != NULL) {
+			dns_rdatalist_fromrdataset(rdataset, &rdatalist);
+			ISC_LIST_APPEND(rdatalist->rdata, rdata, link);
+		}
 
 		/*
 		 * If this is an OPT, SIG(0) or TSIG record, remember it.
@@ -3099,7 +3104,7 @@ dns_message_checksig(dns_message_t *msg, dns_view_t *view) {
 		}
 		result = dns_view_simplefind(view, &sig.signer,
 					     dns_rdatatype_key /* SIG(0) */, 0,
-					     0, false, &keyset, NULL);
+					     0, &keyset, NULL);
 
 		if (result != ISC_R_SUCCESS) {
 			result = DNS_R_KEYUNAUTHORIZED;

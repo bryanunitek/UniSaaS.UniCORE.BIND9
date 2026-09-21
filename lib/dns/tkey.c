@@ -192,7 +192,7 @@ process_gsstkey(dns_message_t *msg, dns_name_t *name, dns_rdata_tkey_t *tkeyin,
 	 * rejected in dst_gssapi_acceptctx(), so if we reach here the
 	 * negotiation is complete and the principal must be set.
 	 */
-	if (dns_name_countlabels(principal) == 0U) {
+	if (dns_name_empty(principal)) {
 		tkeyout->error = dns_tsigerror_badkey;
 		tkey_log("process_gsstkey(): "
 			 "completed context with empty principal");
@@ -406,7 +406,7 @@ dns_tkey_processquery(dns_message_t *msg, dns_tkeyctx_t *tctx,
 	case DNS_TKEYMODE_GSSAPI:
 		keyname = dns_fixedname_initname(&fkeyname);
 
-		if (!dns_name_equal(qname, dns_rootname)) {
+		if (!dns_name_isroot(qname)) {
 			unsigned int n = dns_name_countlabels(qname);
 			dns_name_copy(qname, keyname);
 			dns_name_getlabelsequence(keyname, 0, n - 1, keyname);
@@ -662,6 +662,15 @@ dns_tkey_gssnegotiate(dns_message_t *qmsg, dns_message_t *rmsg,
 		};
 
 		dns_name_clone(DNS_TSIG_GSSAPI_NAME, &tkey.algorithm);
+
+		/*
+		 * 'tkeyname' gets destroyed by dns_message_reset(), create a
+		 * local copy of it for buildquery().
+		 */
+		dns_fixedname_t fixed;
+		dns_fixedname_init(&fixed);
+		dns_name_copy(tkeyname, dns_fixedname_name(&fixed));
+		tkeyname = dns_fixedname_name(&fixed);
 
 		dns_message_reset(qmsg, DNS_MESSAGE_INTENTRENDER);
 		CHECK(buildquery(qmsg, tkeyname, &tkey));

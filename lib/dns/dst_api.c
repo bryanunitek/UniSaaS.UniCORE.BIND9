@@ -251,6 +251,18 @@ dst_algorithm_supported(unsigned int alg) {
 }
 
 bool
+dst_dnssec_algorithm(unsigned int alg) {
+	if ((alg == DST_ALG_DH) || (alg == DST_ALG_INDIRECT) ||
+	    (alg == DST_ALG_GSSAPI) ||
+	    (alg >= DST_ALG_HMAC_FIRST && alg <= DST_ALG_HMAC_LAST))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool
 dst_ds_digest_supported(unsigned int digest_type) {
 	return digest_type == DNS_DSDIGEST_SHA1 ||
 #if defined(DNS_DSDIGEST_SHA256PRIVATE)
@@ -459,7 +471,7 @@ isc_result_t
 dst_key_fromfile(dns_name_t *name, dns_keytag_t id, unsigned int alg, int type,
 		 const char *directory, isc_mem_t *mctx, dst_key_t **keyp) {
 	isc_result_t result;
-	char filename[NAME_MAX];
+	char filename[NAME_MAX + 1];
 	isc_buffer_t buf;
 	dst_key_t *key;
 
@@ -472,7 +484,7 @@ dst_key_fromfile(dns_name_t *name, dns_keytag_t id, unsigned int alg, int type,
 
 	key = NULL;
 
-	isc_buffer_init(&buf, filename, NAME_MAX);
+	isc_buffer_init(&buf, filename, sizeof(filename));
 	CHECK(dst_key_getfilename(name, id, alg, type, NULL, mctx, &buf));
 	CHECK(dst_key_fromnamedfile(filename, directory, type, mctx, &key));
 	CHECK(computeid(key));
@@ -1692,7 +1704,8 @@ dst_key_read_state(const char *filename, isc_mem_t *mctx, dst_key_t **keyp) {
 				BADTOKEN();
 			}
 
-			CHECK(dns_time32_fromtext(DST_AS_STR(token), &when));
+			CHECK(dns_time32_fromregion(token.value.as_textregion,
+						    &when));
 
 			dst_key_settime(*keyp, tag, when);
 			goto next;
@@ -1842,8 +1855,8 @@ write_key_state(const dst_key_t *key, int type, const char *directory) {
 	FILE *fp;
 	isc_buffer_t fileb;
 	isc_buffer_t tmpb;
-	char filename[NAME_MAX];
-	char tmpname[NAME_MAX];
+	char filename[NAME_MAX + 1];
+	char tmpname[NAME_MAX + 1];
 	isc_result_t result;
 
 	REQUIRE(VALID_KEY(key));
@@ -1924,8 +1937,8 @@ write_public_key(const dst_key_t *key, int type, const char *directory) {
 	FILE *fp;
 	isc_buffer_t keyb, tmpb, textb, fileb, classb;
 	isc_region_t r;
-	char tmpname[NAME_MAX];
-	char filename[NAME_MAX];
+	char tmpname[NAME_MAX + 1];
+	char filename[NAME_MAX + 1];
 	unsigned char key_array[DNS_RDATA_MAXLENGTH];
 	/*
 	 * Big enough for the base64 expansion of the key data with
@@ -2114,14 +2127,11 @@ frombuffer(const dns_name_t *name, unsigned int alg, unsigned int flags,
 		}
 	}
 
+	RETERR(algorithm_status(alg));
+
 	key = get_key_struct(name, alg, flags, protocol, 0, rdclass, 0, mctx);
 
 	if (isc_buffer_remaininglength(source) > 0) {
-		result = algorithm_status(alg);
-		if (result != ISC_R_SUCCESS) {
-			dst_key_free(&key);
-			return result;
-		}
 		if (key->func->fromdns == NULL) {
 			dst_key_free(&key);
 			return DST_R_UNSUPPORTEDALG;
@@ -2638,7 +2648,7 @@ dst_algorithm_fromprivatedns(isc_buffer_t *buffer) {
 	dns_name_t *name = dns_fixedname_initname(&fixed);
 	isc_result_t result;
 
-	result = dns_name_fromwire(name, buffer, DNS_DECOMPRESS_NEVER, NULL);
+	result = dns_name_fromwire(name, buffer, NULL, NULL);
 	if (result != ISC_R_SUCCESS) {
 		return 0;
 	}

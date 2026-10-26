@@ -108,8 +108,6 @@ fromwire_opt(ARGS_FROMWIRE) {
 	UNUSED(type);
 	UNUSED(rdclass);
 
-	dctx = dns_decompress_setpermitted(dctx, false);
-
 	isc_buffer_activeregion(source, &sregion);
 	if (sregion.length == 0) {
 		return ISC_R_SUCCESS;
@@ -369,27 +367,9 @@ tostruct_opt(ARGS_TOSTRUCT) {
 
 	dns_rdata_toregion(rdata, &r);
 	opt->length = r.length;
-	opt->options = mem_maybedup(mctx, r.base, r.length);
+	opt->options = r.base;
 	opt->offset = 0;
-	opt->mctx = mctx;
 	return ISC_R_SUCCESS;
-}
-
-static void
-freestruct_opt(ARGS_FREESTRUCT) {
-	dns_rdata_opt_t *opt = source;
-
-	REQUIRE(opt != NULL);
-	REQUIRE(opt->common.rdtype == dns_rdatatype_opt);
-
-	if (opt->mctx == NULL) {
-		return;
-	}
-
-	if (opt->options != NULL) {
-		isc_mem_free(opt->mctx, opt->options);
-	}
-	opt->mctx = NULL;
 }
 
 static isc_result_t

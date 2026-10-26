@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0.  If a copy of the MPL was not distributed with this
+# License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, you can obtain one at https://mozilla.org/MPL/2.0/.
 #
 # See the COPYRIGHT file distributed with this work for additional
@@ -37,7 +37,6 @@ pytestmark = pytest.mark.extra_artifacts(
         "*/*.key",
         "*/*.signed",
         "*/settime.out.*",
-        "ans*/ans.run",
         "*/trusted.keys",
         "*/*.bad",
         "*/*.next",
@@ -1295,6 +1294,14 @@ def test_unknown_algorithms():
     isctest.check.noerror(res2)
     isctest.check.noadflag(res2)
 
+    # check that unknown DNSKEY algorithm using a HMAC code point validates as insecure
+    msg = isctest.query.create("dnskey-163-unknown.example", "A", dnssec=False)
+    res1 = isctest.query.tcp(msg, "10.53.0.3")
+    res2 = isctest.query.tcp(msg, "10.53.0.4")
+    isctest.check.noerror(res1)
+    isctest.check.noerror(res2)
+    isctest.check.noadflag(res2)
+
     # check that unsupported DNSKEY algorithms are in the DNSKEY RRsets
     msg = isctest.query.create("dnskey-unsupported.example", "DNSKEY")
     res = isctest.query.tcp(msg, "10.53.0.3")
@@ -1374,7 +1381,8 @@ def test_unknown_algorithms():
 
 
 def test_legacy_dnssec_types_are_signed():
-    """SIG (24), NXT (30) and KEY (25) records carry a covering RRSIG.
+    """
+    SIG (24), NXT (30) and KEY (25) records carry a covering RRSIG.
 
     Per RFC 3755 SIG and NXT are obsolete and treated as opaque zone
     data; KEY remains valid for SIG(0)/TKEY use.  All three are

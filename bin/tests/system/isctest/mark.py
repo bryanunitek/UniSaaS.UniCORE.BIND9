@@ -1,11 +1,9 @@
-#!/usr/bin/python3
-
 # Copyright (C) Internet Systems Consortium, Inc. ("ISC")
 #
 # SPDX-License-Identifier: MPL-2.0
 #
 # This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0.  If a copy of the MPL was not distributed with this
+# License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, you can obtain one at https://mozilla.org/MPL/2.0/.
 #
 # See the COPYRIGHT file distributed with this work for additional
@@ -57,16 +55,6 @@ def _perl_module_available(module: str) -> bool:
 requires_net_dns = pytest.mark.skipif(
     not _perl_module_available("Net::DNS"),
     reason="Perl Net::DNS module is required",
-)
-
-requires_net_dns_nameserver = pytest.mark.skipif(
-    not _perl_module_available("Net::DNS::Nameserver"),
-    reason="Perl Net::DNS::Nameserver module is required",
-)
-
-requires_time_hires = pytest.mark.skipif(
-    not _perl_module_available("Time::HiRes"),
-    reason="Perl Time::HiRes module is required",
 )
 
 
@@ -139,6 +127,10 @@ without_tsan = pytest.mark.skipif(
 with_cpu_affinity = pytest.mark.skipif(
     not (shutil.which("cpuset") or shutil.which("numactl") or shutil.which("taskset")),
     reason="cpuset, numactl, or taskset is required",
+)
+
+with_curl = pytest.mark.skipif(
+    not shutil.which(os.getenv("CURL", "")), reason="curl is required"
 )
 
 softhsm2_environment = pytest.mark.skipif(

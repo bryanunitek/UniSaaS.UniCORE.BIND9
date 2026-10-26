@@ -107,11 +107,11 @@
  * purpose the client desires.
  */
 struct dns_rdata {
-	unsigned char	*data ISC_ATTR_COUNTED_BY_PTR(length);
+	uint16_t	 length;
 	dns_rdataclass_t rdclass;
 	dns_rdatatype_t	 type;
-	uint16_t	 length;
 	uint16_t	 flags;
+	unsigned char	*data ISC_ATTR_COUNTED_BY_PTR(length);
 	ISC_LINK(dns_rdata_t) link;
 };
 
@@ -313,7 +313,7 @@ dns_rdata_toregion(const dns_rdata_t *rdata, isc_region_t *r);
 isc_result_t
 dns_rdata_fromwire(dns_rdata_t *rdata, dns_rdataclass_t rdclass,
 		   dns_rdatatype_t type, isc_buffer_t *source,
-		   dns_decompress_t dctx, isc_buffer_t *target);
+		   dns_decompress_t *dctx, isc_buffer_t *target);
 /*%<
  * Copy the possibly-compressed rdata at source into the target region.
  *
@@ -329,7 +329,9 @@ dns_rdata_fromwire(dns_rdata_t *rdata, dns_rdataclass_t rdclass,
  *
  *\li	'target' is a valid buffer.
  *
- *\li	'dctx' is a valid decompression context.
+ *\li	'dctx' is a valid decompression context, or NULL, in which case
+ *	any compression pointer in the rdata is rejected with
+ *	DNS_R_DISALLOWED.
  *
  * Ensures,
  *	if result is success:
@@ -533,13 +535,11 @@ dns_rdata_fromstruct(dns_rdata_t *rdata, dns_rdataclass_t rdclass,
  */
 
 isc_result_t
-dns_rdata_tostruct(const dns_rdata_t *rdata, void *target, isc_mem_t *mctx);
+dns_rdata_tostruct(const dns_rdata_t *rdata, void *target);
 /*%<
  * Convert an rdata into its C structure representation.
  *
- * If 'mctx' is NULL then 'rdata' must persist while 'target' is being used.
- *
- * If 'mctx' is non NULL then memory will be allocated if required.
+ * The 'rdata' must persist while 'target' is being used.
  *
  * Requires:
  *
@@ -550,17 +550,6 @@ dns_rdata_tostruct(const dns_rdata_t *rdata, void *target, isc_mem_t *mctx);
  * Result:
  *\li	Success
  *\li	Not Implemented
- */
-
-void
-dns_rdata_freestruct(void *source);
-/*%<
- * Free dynamic memory attached to 'source' (if any).
- *
- * Requires:
- *
- *\li	'source' to point to the structure previously filled in by
- *	dns_rdata_tostruct().
  */
 
 unsigned int

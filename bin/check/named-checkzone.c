@@ -113,10 +113,12 @@ main(int argc, char **argv) {
 
 	isc_commandline_init(argc, argv);
 
-	if (strcasecmp(isc_commandline_progname, "named-checkzone") == 0) {
+	if (isc_string_casehasprefix(isc_commandline_progname,
+				     "named-checkzone"))
+	{
 		progmode = progmode_check;
-	} else if (strcasecmp(isc_commandline_progname, "named-compilezone") ==
-		   0)
+	} else if (isc_string_casehasprefix(isc_commandline_progname,
+					    "named-compilezone"))
 	{
 		progmode = progmode_compile;
 	} else {
@@ -452,7 +454,7 @@ main(int argc, char **argv) {
 			inputformat = dns_masterformat_text;
 		} else if (strcasecmp(inputformatstr, "raw") == 0) {
 			inputformat = dns_masterformat_raw;
-		} else if (strncasecmp(inputformatstr, "raw=", 4) == 0) {
+		} else if (isc_string_casehasprefix(inputformatstr, "raw=")) {
 			inputformat = dns_masterformat_raw;
 			fprintf(stderr, "WARNING: input format raw, version "
 					"ignored\n");
@@ -464,18 +466,19 @@ main(int argc, char **argv) {
 	}
 
 	if (outputformatstr != NULL) {
+		const char *rawver = NULL;
 		if (strcasecmp(outputformatstr, "text") == 0) {
 			outputformat = dns_masterformat_text;
 		} else if (strcasecmp(outputformatstr, "raw") == 0) {
 			outputformat = dns_masterformat_raw;
-		} else if (strncasecmp(outputformatstr, "raw=", 4) == 0) {
+		} else if ((rawver = isc_string_casestripprefix(
+				    outputformatstr, "raw=")) != NULL)
+		{
 			char *end;
 
 			outputformat = dns_masterformat_raw;
-			rawversion = strtol(outputformatstr + 4, &end, 10);
-			if (end == outputformatstr + 4 || *end != '\0' ||
-			    rawversion > 1U)
-			{
+			rawversion = strtol(rawver, &end, 10);
+			if (end == rawver || *end != '\0' || rawversion > 1U) {
 				fprintf(stderr, "unknown raw format version\n");
 				exit(EXIT_FAILURE);
 			}

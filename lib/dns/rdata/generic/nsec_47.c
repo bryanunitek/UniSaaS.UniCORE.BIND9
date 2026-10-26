@@ -83,8 +83,6 @@ fromwire_nsec(ARGS_FROMWIRE) {
 	UNUSED(type);
 	UNUSED(rdclass);
 
-	dctx = dns_decompress_setpermitted(dctx, false);
-
 	dns_name_init(&name);
 	RETERR(dns_name_fromwire(&name, source, dctx, target));
 
@@ -169,30 +167,11 @@ tostruct_nsec(ARGS_TOSTRUCT) {
 	dns_name_fromregion(&name, &region);
 	isc_region_consume(&region, name_length(&name));
 	dns_name_init(&nsec->next);
-	name_duporclone(&name, mctx, &nsec->next);
+	dns_name_clone(&name, &nsec->next);
 
 	nsec->len = region.length;
-	nsec->typebits = mem_maybedup(mctx, region.base, region.length);
-	nsec->mctx = mctx;
+	nsec->typebits = region.base;
 	return ISC_R_SUCCESS;
-}
-
-static void
-freestruct_nsec(ARGS_FREESTRUCT) {
-	dns_rdata_nsec_t *nsec = source;
-
-	REQUIRE(nsec != NULL);
-	REQUIRE(nsec->common.rdtype == dns_rdatatype_nsec);
-
-	if (nsec->mctx == NULL) {
-		return;
-	}
-
-	dns_name_free(&nsec->next, nsec->mctx);
-	if (nsec->typebits != NULL) {
-		isc_mem_free(nsec->mctx, nsec->typebits);
-	}
-	nsec->mctx = NULL;
 }
 
 static isc_result_t

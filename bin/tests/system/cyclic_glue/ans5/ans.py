@@ -1,15 +1,13 @@
-"""
-Copyright (C) Internet Systems Consortium, Inc. ("ISC")
-
-SPDX-License-Identifier: MPL-2.0
-
-This Source Code Form is subject to the terms of the Mozilla Public
-License, v. 2.0.  If a copy of the MPL was not distributed with this
-file, you can obtain one at https://mozilla.org/MPL/2.0/.
-
-See the COPYRIGHT file distributed with this work for additional
-information regarding copyright ownership.
-"""
+# Copyright (C) Internet Systems Consortium, Inc. ("ISC")
+#
+# SPDX-License-Identifier: MPL-2.0
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, you can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# See the COPYRIGHT file distributed with this work for additional
+# information regarding copyright ownership.
 
 import dns.name
 import dns.rcode
@@ -17,7 +15,9 @@ import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
 
-from isctest.asyncserver import AsyncDnsServer, QnameQtypeHandler, StaticResponseHandler
+from isctest.asyncserver import AsyncDnsServer
+from isctest.asyncserver.handlers import StaticResponseHandler
+from isctest.asyncserver.matchers import Qname, Qtype
 
 
 def rrset(
@@ -37,9 +37,8 @@ def a(owner: str, address: str) -> dns.rrset.RRset:
     return rrset(owner, dns.rdatatype.A, address)
 
 
-class BrokenFooHandler(QnameQtypeHandler, StaticResponseHandler):
-    qnames = ["a.foo.test."]
-    qtypes = [dns.rdatatype.A]
+class BrokenFooHandler(StaticResponseHandler):
+    matcher = Qname("a.foo.test.") & Qtype(dns.rdatatype.A)
     authority = [
         ns("foo.test.", "ns.foo.test."),
         ns("foo.test.", "ns.bar.test."),
@@ -56,9 +55,8 @@ class BrokenFooHandler(QnameQtypeHandler, StaticResponseHandler):
     ]
 
 
-class BrokenBarHandler(QnameQtypeHandler, StaticResponseHandler):
-    qnames = ["a.bar.test."]
-    qtypes = [dns.rdatatype.A]
+class BrokenBarHandler(StaticResponseHandler):
+    matcher = Qname("a.bar.test.") & Qtype(dns.rdatatype.A)
     authority = [
         ns("bar.test.", "ns.bar.test."),
         # This NS is valid but outside the bar.test domain.

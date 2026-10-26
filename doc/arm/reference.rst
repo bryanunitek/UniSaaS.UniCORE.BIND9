@@ -4685,9 +4685,6 @@ that matches all clients.
    the real version number of this server. Specifying ``version none``
    disables processing of the queries.
 
-   Setting :any:`version` to any value (including ``none``) also disables
-   queries for ``authors.bind TXT CH``.
-
 .. namedconf:statement:: hostname
    :tags: server
    :short: Specifies the hostname of the server to return in response to a ``hostname.bind`` query.
@@ -6705,6 +6702,9 @@ The following options apply to DS queries sent to :any:`parental-agents`:
    If set to ``no``, no DS queries are sent. Users should manually run
    :option:`rndc dnssec -checkds <rndc dnssec>` with the appropriate parameters,
    to signal that specific DS records are published and/or withdrawn.
+
+   Responses to DS queries are validated, so :any:`dnssec-validation` must be
+   enabled for the server.
 
 .. namedconf:statement:: parental-source
    :tags: dnssec

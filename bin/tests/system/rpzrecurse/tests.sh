@@ -449,9 +449,9 @@ echo_i "checking 'nsip-wait-recurse no' is faster than 'nsip-wait-recurse yes' (
 add_test_marker 10.53.0.2 10.53.0.3
 echo_i "timing 'nsip-wait-recurse yes' (default)"
 ret=0
-t1=$($PERL -e 'print time()."\n";')
+t1=$(date +%s)
 $DIG -p ${PORT} +time=30 +tries=1 @10.53.0.3 foo.child.example.tld a >dig.out.yes.$t || ret=1
-t2=$($PERL -e 'print time()."\n";')
+t2=$(date +%s)
 p1=$((t2 - t1))
 echo_i "elapsed time $p1 seconds"
 
@@ -462,9 +462,9 @@ $RNDC -c ../_common/rndc.conf -s 10.53.0.3 -p ${CONTROLPORT} reload >/dev/null
 wait_for_log 20 "rpz: policy: reload done" ns3/named.run || ret=1
 
 echo_i "timing 'nsip-wait-recurse no'"
-t3=$($PERL -e 'print time()."\n";')
+t3=$(date +%s)
 $DIG -p ${PORT} +time=30 +tries=1 @10.53.0.3 foo.child.example.tld a >dig.out.no.$t || ret=1
-t4=$($PERL -e 'print time()."\n";')
+t4=$(date +%s)
 p2=$((t4 - t3))
 echo_i "elapsed time $p2 seconds"
 
@@ -484,9 +484,9 @@ echo_i "checking 'nsdname-wait-recurse no' is faster than 'nsdname-wait-recurse 
 add_test_marker 10.53.0.2 10.53.0.3
 echo_i "timing 'nsdname-wait-recurse yes' (default)"
 ret=0
-t1=$($PERL -e 'print time()."\n";')
+t1=$(date +%s)
 $DIG -p ${PORT} +time=30 +tries=1 @10.53.0.3 foo.child.example.tld a >dig.out.yes.$t || ret=1
-t2=$($PERL -e 'print time()."\n";')
+t2=$(date +%s)
 p1=$((t2 - t1))
 echo_i "elapsed time $p1 seconds"
 
@@ -497,11 +497,26 @@ $RNDC -c ../_common/rndc.conf -s 10.53.0.3 -p ${CONTROLPORT} reload >/dev/null
 wait_for_log 20 "rpz: policy: reload done" ns3/named.run || ret=1
 
 echo_i "timing 'nsdname-wait-recurse no'"
-t3=$($PERL -e 'print time()."\n";')
+t3=$(date +%s)
 $DIG -p ${PORT} +time=30 +tries=1 @10.53.0.3 foo.child.example.tld a >dig.out.no.$t || ret=1
-t4=$($PERL -e 'print time()."\n";')
+t4=$(date +%s)
 p2=$((t4 - t3))
 echo_i "elapsed time $p2 seconds"
+
+t=$((t + 1))
+echo_i "testing RD=0 crash described in GL#6408 [CVE-2026-97313] (${t})"
+run_server cve-2026-97313
+$DIG $DIGOPTS trigger.cve-2026-97313.test a @10.53.0.2 -p ${PORT} >dig.out.${t}.1 || status=1
+grep "status: NOERROR" dig.out.${t}.1 >/dev/null || {
+  echo_i "test ${t} failed"
+  status=1
+}
+sleep 2 # wait for SOA with TTL=1 to expire
+$DIG $DIGOPTS +norecurse +tries=1 trigger.cve-2026-97313.test a @10.53.0.2 -p ${PORT} >dig.out.${t}.2
+grep "status: NOERROR" dig.out.${t}.2 >/dev/null || {
+  echo_i "test ${t} failed"
+  status=1
+}
 
 if test $p1 -le $p2; then ret=1; fi
 if test $ret != 0; then echo_i "failed"; fi

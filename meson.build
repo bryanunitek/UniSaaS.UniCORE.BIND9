@@ -12,7 +12,7 @@
 project(
     'bind',
     ['c'],
-    version: '9.21.26',
+    version: '9.21.27',
     meson_version: '>=1.3.0',
     license: 'MPL-2.0',
     default_options: {
@@ -172,7 +172,6 @@ add_project_arguments(
         '-Werror=vla',
 
         '-fdiagnostics-show-option',
-        '-fexperimental-late-parse-attributes',
         '-fno-delete-null-pointer-checks',
         '-fno-strict-aliasing',
         '-fstrict-flex-arrays=3',

@@ -69,7 +69,7 @@ fromwire_cname(ARGS_FROMWIRE) {
 	UNUSED(type);
 	UNUSED(rdclass);
 
-	dctx = dns_decompress_setpermitted(dctx, true);
+	dns_decompress_setpermitted(dctx, true);
 
 	dns_name_init(&name);
 	return dns_name_fromwire(&name, source, dctx, target);
@@ -150,23 +150,8 @@ tostruct_cname(ARGS_TOSTRUCT) {
 	dns_rdata_toregion(rdata, &region);
 	dns_name_fromregion(&name, &region);
 	dns_name_init(&cname->cname);
-	name_duporclone(&name, mctx, &cname->cname);
-	cname->mctx = mctx;
+	dns_name_clone(&name, &cname->cname);
 	return ISC_R_SUCCESS;
-}
-
-static void
-freestruct_cname(ARGS_FREESTRUCT) {
-	dns_rdata_cname_t *cname = source;
-
-	REQUIRE(cname != NULL);
-
-	if (cname->mctx == NULL) {
-		return;
-	}
-
-	dns_name_free(&cname->cname, cname->mctx);
-	cname->mctx = NULL;
 }
 
 static isc_result_t

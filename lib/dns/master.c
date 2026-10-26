@@ -245,7 +245,8 @@ loadctx_destroy(dns_loadctx_t *lctx);
 				goto log_and_cleanup;                        \
 		}                                                            \
 		if ((token)->type == isc_tokentype_special ||                \
-		    (token)->type == isc_tokentype_unknown)                  \
+		    (token)->type == isc_tokentype_unknown ||                \
+		    isc_token_hasnul(token))                                 \
 		{                                                            \
 			result = DNS_R_SYNTAX;                               \
 			if (MANYERRS(lctx, result)) {                        \
@@ -1205,8 +1206,9 @@ load_text(dns_loadctx_t *lctx) {
 				isc_stdtime_t dump_time;
 				isc_stdtime_t current_time = isc_stdtime_now();
 				GETTOKEN(lctx->lex, 0, &token, false);
-				result = dns_time64_fromtext(DNS_AS_STR(token),
-							     &dump_time64);
+				result = dns_time64_fromregion(
+					token.value.as_textregion,
+					&dump_time64);
 				if (MANYERRS(lctx, result)) {
 					SETRESULT(lctx, result);
 					LOGIT(result);
@@ -1333,7 +1335,8 @@ load_text(dns_loadctx_t *lctx) {
 				}
 				EXPECTEOL;
 				continue;
-			} else if (strncasecmp(DNS_AS_STR(token), "$", 1) == 0)
+			} else if (isc_string_casehasprefix(DNS_AS_STR(token),
+							    "$"))
 			{
 				(callbacks->error)(callbacks,
 						   "%s: %s:%lu: "
@@ -1935,8 +1938,7 @@ load_text(dns_loadctx_t *lctx) {
 
 		if (type == dns_rdatatype_rrsig && lctx->warn_sigexpired) {
 			dns_rdata_rrsig_t sig;
-			result = dns_rdata_tostruct(&rdata[rdcount], &sig,
-						    NULL);
+			result = dns_rdata_tostruct(&rdata[rdcount], &sig);
 			RUNTIME_CHECK(result == ISC_R_SUCCESS);
 			if (isc_serial_lt(sig.timeexpire, lctx->now)) {
 				(*callbacks->warn)(callbacks,
@@ -2287,10 +2289,8 @@ load_raw(dns_loadctx_t *lctx) {
 	int target_size = TSIZ;
 	isc_buffer_t target, buf;
 	unsigned char *target_mem = NULL;
-	dns_decompress_t dctx;
 
 	callbacks = lctx->callbacks;
-	dctx = DNS_DECOMPRESS_NEVER;
 
 	if (lctx->first) {
 		RETERR(load_header(lctx));
@@ -2409,7 +2409,7 @@ load_raw(dns_loadctx_t *lctx) {
 				     &totallen));
 
 		isc_buffer_setactive(&target, (unsigned int)namelen);
-		CHECK(dns_name_fromwire(name, &target, dctx, NULL));
+		CHECK(dns_name_fromwire(name, &target, NULL, NULL));
 
 		if ((lctx->options & DNS_MASTER_CHECKTTL) != 0 &&
 		    rdatalist.ttl > lctx->maxttl)
@@ -2439,7 +2439,8 @@ load_raw(dns_loadctx_t *lctx) {
 			dns_rdata_init(&rdata[i]);
 
 			if (sequential_read &&
-			    isc_buffer_availablelength(&target) < MINTSIZ)
+			    isc_buffer_availablelength(&target) <
+				    sizeof(uint16_t) + MINTSIZ)
 			{
 				unsigned int j;
 
@@ -2471,6 +2472,9 @@ load_raw(dns_loadctx_t *lctx) {
 					     sizeof(rdlen), lctx->f,
 					     &totallen));
 			rdlen = isc_buffer_getuint16(&target);
+			if (rdlen > MINTSIZ) {
+				CLEANUP(ISC_R_RANGE);
+			}
 
 			/* rdata */
 			CHECK(read_and_check(sequential_read, &target, rdlen,
@@ -2485,7 +2489,7 @@ load_raw(dns_loadctx_t *lctx) {
 			isc_buffer_init(&buf, isc_buffer_current(&target),
 					(unsigned int)rdlen);
 			CHECK(dns_rdata_fromwire(&rdata[i], rdatalist.rdclass,
-						 rdatalist.type, &target, dctx,
+						 rdatalist.type, &target, NULL,
 						 &buf));
 			ISC_LIST_APPEND(rdatalist.rdata, &rdata[i], link);
 		}
@@ -2798,7 +2802,7 @@ resign_fromlist(dns_rdatalist_t *this, dns_loadctx_t *lctx) {
 
 	rdata = ISC_LIST_HEAD(this->rdata);
 	INSIST(rdata != NULL);
-	(void)dns_rdata_tostruct(rdata, &sig, NULL);
+	(void)dns_rdata_tostruct(rdata, &sig);
 	if (isc_serial_gt(sig.timesigned, lctx->now)) {
 		when = lctx->now;
 	} else {
@@ -2807,7 +2811,7 @@ resign_fromlist(dns_rdatalist_t *this, dns_loadctx_t *lctx) {
 
 	rdata = ISC_LIST_NEXT(rdata, link);
 	while (rdata != NULL) {
-		(void)dns_rdata_tostruct(rdata, &sig, NULL);
+		(void)dns_rdata_tostruct(rdata, &sig);
 		if (isc_serial_gt(sig.timesigned, lctx->now)) {
 			when = lctx->now;
 		} else if (sig.timeexpire - lctx->resign < when) {

@@ -40,6 +40,8 @@
 #include <dns/zone.h>
 #include <dns/zoneproperties.h>
 
+#define DNS_RRL_MAX_EVICTION_PROBES 64
+
 static void
 log_end(dns_rrl_t *rrl, dns_rrl_entry_t *e, bool early, char *log_buf,
 	unsigned int log_buf_len);
@@ -557,31 +559,37 @@ get_entry(dns_rrl_t *rrl, const isc_sockaddr_t *client_addr, dns_zone_t *zone,
 	}
 
 	/*
-	 * The entry does not exist, so create it by finding a free entry.
-	 * Keep currently penalized and logged entries.
-	 * Try to make more entries if none are idle.
-	 * Steal the oldest entry if we cannot create more.
+	 * The entry does not exist, so create it by finding a free entry or
+	 * one whose balance has recovered.  Limit the search to avoid an
+	 * unbounded walk under rrl->lock.  Try to make more entries if none
+	 * are found, or recycle the oldest entry if we cannot create more.
 	 */
 	dns_rrl_entry_t *entry = NULL;
-	ISC_LIST_FOREACH_REV(rrl->lru, e, lru) {
-		entry = e;
-		if (!ISC_LINK_LINKED(e, hlink)) {
+	size_t probes_left = DNS_RRL_MAX_EVICTION_PROBES;
+	for (entry = ISC_LIST_TAIL(rrl->lru); entry != NULL && probes_left > 0;
+	     entry = ISC_LIST_PREV(entry, lru), probes_left--)
+	{
+		if (!ISC_LINK_LINKED(entry, hlink)) {
 			break;
 		}
-		age = get_age(rrl, e, now);
+
+		age = get_age(rrl, entry, now);
 		if (age <= 1) {
 			entry = NULL;
 			break;
 		}
-		if (!e->logged && response_balance(rrl, e, age) > 0) {
+
+		if (response_balance(rrl, entry, age) > 0) {
 			break;
 		}
 	}
 
-	if (entry == NULL) {
+	if (entry == NULL || probes_left == 0) {
 		expand_entries(rrl, ISC_MIN((rrl->num_entries + 1) / 2, 1000));
 		entry = ISC_LIST_TAIL(rrl->lru);
 	}
+
+	INSIST(entry != NULL);
 	if (entry->logged) {
 		log_end(rrl, entry, true, log_buf, log_buf_len);
 	}
@@ -644,7 +652,7 @@ debit_rrl_entry(dns_rrl_t *rrl, dns_rrl_entry_t *e, double qps, double scale,
 			rrl, client_addr, NULL, 0, dns_rdatatype_none, NULL,
 			DNS_RRL_RTYPE_TCP, now, false, log_buf, log_buf_len);
 		if (credit_e != NULL) {
-			age = get_age(rrl, e, now);
+			age = get_age(rrl, credit_e, now);
 			if (age < rrl->window) {
 				scale = 1.0;
 			}

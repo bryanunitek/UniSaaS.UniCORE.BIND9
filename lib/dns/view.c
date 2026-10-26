@@ -180,6 +180,34 @@ dns_view_create(isc_mem_t *mctx, dns_dispatchmgr_t *dispatchmgr,
 }
 
 static void
+dumpanddetach_tsigkeys(dns_view_t *view) {
+	char keyfile[PATH_MAX];
+	isc_result_t result;
+
+	REQUIRE(view->dynamickeys != NULL);
+
+	result = isc_file_sanitize(NULL, view->name, "tsigkeys", keyfile,
+				   sizeof(keyfile));
+	if (result != ISC_R_SUCCESS) {
+		dns_tsigkeyring_detach(&view->dynamickeys);
+	} else {
+		result = dns_tsigkeyring_dumpanddetach(&view->dynamickeys,
+						       keyfile);
+	}
+
+	switch (result) {
+	case ISC_R_SUCCESS:
+	case DNS_R_CONTINUE:
+	case ISC_R_NOTFOUND:
+		break;
+	default:
+		isc_log_write(DNS_LOGCATEGORY_DNSSEC, DNS_LOGMODULE_TSIG,
+			      ISC_LOG_INFO, "failed to dump TSIG keys: %s",
+			      isc_result_totext(result));
+	}
+}
+
+static void
 destroy(dns_view_t *view) {
 	dns_dns64_t *dns64 = NULL;
 
@@ -200,36 +228,7 @@ destroy(dns_view_t *view) {
 	}
 
 	if (view->dynamickeys != NULL) {
-		isc_result_t result;
-		char template[PATH_MAX];
-		char keyfile[PATH_MAX];
-		FILE *fp = NULL;
-
-		result = isc_file_mktemplate(NULL, template, sizeof(template));
-		if (result == ISC_R_SUCCESS) {
-			(void)isc_file_openuniqueprivate(template, &fp);
-		}
-		if (fp != NULL) {
-			result = dns_tsigkeyring_dump(view->dynamickeys, fp);
-			if (result == ISC_R_SUCCESS) {
-				if (fclose(fp) == 0) {
-					result = isc_file_sanitize(
-						NULL, view->name, "tsigkeys",
-						keyfile, sizeof(keyfile));
-					if (result == ISC_R_SUCCESS) {
-						result = isc_file_rename(
-							template, keyfile);
-					}
-				}
-				if (result != ISC_R_SUCCESS) {
-					(void)remove(template);
-				}
-			} else {
-				(void)fclose(fp);
-				(void)remove(template);
-			}
-		}
-		dns_tsigkeyring_detach(&view->dynamickeys);
+		dumpanddetach_tsigkeys(view);
 	}
 	if (view->transports != NULL) {
 		dns_transport_list_detach(&view->transports);
@@ -1707,7 +1706,7 @@ dns_view_loadnta(dns_view_t *view) {
 
 	for (;;) {
 		int options = (ISC_LEXOPT_EOL | ISC_LEXOPT_EOF);
-		char *name, *type, *timestamp;
+		char *name, *type;
 		size_t len;
 		dns_fixedname_t fn;
 		const dns_name_t *ntaname;
@@ -1754,8 +1753,7 @@ dns_view_loadnta(dns_view_t *view) {
 		if (token.type != isc_tokentype_string) {
 			CLEANUP(ISC_R_UNEXPECTEDTOKEN);
 		}
-		timestamp = TSTR(token);
-		CHECK(dns_time32_fromtext(timestamp, &t));
+		CHECK(dns_time32_fromregion(token.value.as_textregion, &t));
 
 		CHECK(isc_lex_gettoken(lex, options, &token));
 		if (token.type != isc_tokentype_eol &&
@@ -2000,11 +1998,11 @@ dns_view_addtrustedkey(dns_view_t *view, dns_rdatatype_t rdtype,
 	isc_buffer_init(&b, rdatabuf, sizeof(rdatabuf));
 	dns_rdata_init(&rdata);
 	isc_buffer_setactive(databuf, isc_buffer_usedlength(databuf));
-	CHECK(dns_rdata_fromwire(&rdata, view->rdclass, rdtype, databuf,
-				 DNS_DECOMPRESS_NEVER, &b));
+	CHECK(dns_rdata_fromwire(&rdata, view->rdclass, rdtype, databuf, NULL,
+				 &b));
 
 	if (rdtype == dns_rdatatype_ds) {
-		CHECK(dns_rdata_tostruct(&rdata, &ds, NULL));
+		CHECK(dns_rdata_tostruct(&rdata, &ds));
 	} else {
 		CHECK(dns_ds_fromkeyrdata(name, &rdata, DNS_DSDIGEST_SHA256,
 					  digest, sizeof(digest), &ds));

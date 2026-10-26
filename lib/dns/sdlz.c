@@ -166,10 +166,6 @@ typedef struct sdlz_addglue_ctx {
 /* This is a reasonable value */
 #define SDLZ_DEFAULT_TTL (60 * 60 * 24)
 
-#ifdef __COVERITY__
-#define MAYBE_LOCK(imp)	  LOCK(&imp->driverlock)
-#define MAYBE_UNLOCK(imp) UNLOCK(&imp->driverlock)
-#else /* ifdef __COVERITY__ */
 #define MAYBE_LOCK(imp)                                     \
 	do {                                                \
 		unsigned int flags = imp->flags;            \
@@ -183,7 +179,6 @@ typedef struct sdlz_addglue_ctx {
 		if ((flags & DNS_SDLZFLAG_THREADSAFE) == 0) \
 			UNLOCK(&imp->driverlock);           \
 	} while (0)
-#endif /* ifdef __COVERITY__ */
 
 /*
  * Forward references.
@@ -1637,7 +1632,7 @@ dns_sdlzssumatch(const dns_name_t *signer, const dns_name_t *name,
 	char b_type[DNS_RDATATYPE_FORMATSIZE];
 	char b_key[DST_KEY_FORMATSIZE];
 	isc_buffer_t *tkey_token = NULL;
-	isc_region_t token_region = { NULL, 0 };
+	isc_region_t token_region = { 0 };
 	uint32_t token_len = 0;
 	bool ret;
 

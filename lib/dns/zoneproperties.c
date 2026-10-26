@@ -453,6 +453,12 @@ dns_zone_expandzonefile(isc_buffer_t *b, const char *filename,
 		names.viewname = "";
 	}
 
+	if (strpbrk(filename, "$%") == NULL) {
+		putmem(b, filename, strlen(filename));
+		isc_buffer_putuint8(b, 0);
+		return;
+	}
+
 	/* Normalize the name by converting to lower case */
 	result = dns_name_downcase(zonename, names.zonename);
 	INSIST(result == ISC_R_SUCCESS);
@@ -1028,6 +1034,11 @@ dns_zone_setnotifyacl(dns_zone_t *zone, dns_acl_t *acl) {
 	LOCK_ZONE(zone);
 	dns_acl_attach(acl, &zone->notifysoa.notify_acl);
 	dns_acl_attach(acl, &zone->notifycds.notify_acl);
+
+	if (dns__zone_inline_secure(zone)) {
+		dns_acl_attach(acl, &zone->raw->notifysoa.notify_acl);
+		dns_acl_attach(acl, &zone->raw->notifycds.notify_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1039,6 +1050,10 @@ dns_zone_setqueryacl(dns_zone_t *zone, dns_acl_t *acl) {
 
 	LOCK_ZONE(zone);
 	dns_acl_attach(acl, &zone->query_acl);
+
+	if (dns__zone_inline_secure(zone)) {
+		dns_acl_attach(acl, &zone->raw->query_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1050,6 +1065,10 @@ dns_zone_setqueryonacl(dns_zone_t *zone, dns_acl_t *acl) {
 
 	LOCK_ZONE(zone);
 	dns_acl_attach(acl, &zone->queryon_acl);
+
+	if (dns__zone_inline_secure(zone)) {
+		dns_acl_attach(acl, &zone->raw->queryon_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1061,6 +1080,10 @@ dns_zone_setupdateacl(dns_zone_t *zone, dns_acl_t *acl) {
 
 	LOCK_ZONE(zone);
 	dns_acl_attach(acl, &zone->update_acl);
+
+	if (dns__zone_inline_secure(zone)) {
+		dns_acl_attach(acl, &zone->raw->update_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1072,6 +1095,10 @@ dns_zone_setforwardacl(dns_zone_t *zone, dns_acl_t *acl) {
 
 	LOCK_ZONE(zone);
 	dns_acl_attach(acl, &zone->forward_acl);
+
+	if (dns__zone_inline_secure(zone)) {
+		dns_acl_attach(acl, &zone->raw->forward_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1083,6 +1110,10 @@ dns_zone_setxfracl(dns_zone_t *zone, dns_acl_t *acl) {
 
 	LOCK_ZONE(zone);
 	dns_acl_attach(acl, &zone->xfr_acl);
+
+	if (dns__zone_inline_secure(zone)) {
+		dns_acl_attach(acl, &zone->raw->xfr_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1129,6 +1160,9 @@ dns_zone_clearupdateacl(dns_zone_t *zone) {
 	if (zone->update_acl != NULL) {
 		dns_acl_detach(&zone->update_acl);
 	}
+	if (dns__zone_inline_secure(zone) && zone->raw->update_acl != NULL) {
+		dns_acl_detach(&zone->raw->update_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1139,6 +1173,9 @@ dns_zone_clearforwardacl(dns_zone_t *zone) {
 	LOCK_ZONE(zone);
 	if (zone->forward_acl != NULL) {
 		dns_acl_detach(&zone->forward_acl);
+	}
+	if (dns__zone_inline_secure(zone) && zone->raw->forward_acl != NULL) {
+		dns_acl_detach(&zone->raw->forward_acl);
 	}
 	UNLOCK_ZONE(zone);
 }
@@ -1154,6 +1191,15 @@ dns_zone_clearnotifyacl(dns_zone_t *zone) {
 	if (zone->notifycds.notify_acl != NULL) {
 		dns_acl_detach(&zone->notifycds.notify_acl);
 	}
+
+	if (dns__zone_inline_secure(zone)) {
+		if (zone->raw->notifysoa.notify_acl != NULL) {
+			dns_acl_detach(&zone->raw->notifysoa.notify_acl);
+		}
+		if (zone->raw->notifycds.notify_acl != NULL) {
+			dns_acl_detach(&zone->raw->notifycds.notify_acl);
+		}
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1164,6 +1210,9 @@ dns_zone_clearqueryacl(dns_zone_t *zone) {
 	LOCK_ZONE(zone);
 	if (zone->query_acl != NULL) {
 		dns_acl_detach(&zone->query_acl);
+	}
+	if (dns__zone_inline_secure(zone) && zone->raw->query_acl != NULL) {
+		dns_acl_detach(&zone->raw->query_acl);
 	}
 	UNLOCK_ZONE(zone);
 }
@@ -1176,6 +1225,9 @@ dns_zone_clearqueryonacl(dns_zone_t *zone) {
 	if (zone->queryon_acl != NULL) {
 		dns_acl_detach(&zone->queryon_acl);
 	}
+	if (dns__zone_inline_secure(zone) && zone->raw->queryon_acl != NULL) {
+		dns_acl_detach(&zone->raw->queryon_acl);
+	}
 	UNLOCK_ZONE(zone);
 }
 
@@ -1186,6 +1238,9 @@ dns_zone_clearxfracl(dns_zone_t *zone) {
 	LOCK_ZONE(zone);
 	if (zone->xfr_acl != NULL) {
 		dns_acl_detach(&zone->xfr_acl);
+	}
+	if (dns__zone_inline_secure(zone) && zone->raw->xfr_acl != NULL) {
+		dns_acl_detach(&zone->raw->xfr_acl);
 	}
 	UNLOCK_ZONE(zone);
 }
@@ -2040,18 +2095,17 @@ dns_zone_sethooktable(dns_zone_t *zone, void *hooktable,
 }
 
 void
-dns_zone_setcfg(dns_zone_t *zone, const char *cfg) {
+dns_zone_setcfg(dns_zone_t *zone, void *cfg, void (*cfg_detach)(void *)) {
 	REQUIRE(DNS_ZONE_VALID(zone));
 
-	if (zone->cfg != NULL) {
-		isc_mem_free(zone->mctx, zone->cfg);
+	if (zone->cfg != NULL && zone->cfg_detach != NULL) {
+		zone->cfg_detach(zone->cfg);
 	}
-	if (cfg != NULL) {
-		zone->cfg = isc_mem_strdup(zone->mctx, cfg);
-	}
+	zone->cfg = cfg;
+	zone->cfg_detach = cfg_detach;
 }
 
-const char *
+void *
 dns_zone_getcfg(dns_zone_t *zone) {
 	REQUIRE(DNS_ZONE_VALID(zone));
 

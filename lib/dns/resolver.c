@@ -69,7 +69,6 @@
 #include <dns/rdataclass.h>
 #include <dns/rdatalist.h>
 #include <dns/rdataset.h>
-#include <dns/rdatasetiter.h>
 #include <dns/rdatastruct.h>
 #include <dns/rdatatype.h>
 #include <dns/resolver.h>
@@ -109,7 +108,7 @@
 		      fctx, fctx->info, isc_result_totext(res), (m1), (m2))
 #define FCTXTRACE5(m1, m2, v)                                           \
 	isc_log_write(DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER, \
-		      ISC_LOG_DEBUG(3), "fctx %p(%s): %s %s%u", fctx,   \
+		      ISC_LOG_DEBUG(3), "fctx %p(%s): %s %s%zu", fctx,  \
 		      fctx->info, (m1), (m2), (v))
 #define FCTXTRACEN(m1, name, res)                                    \
 	do {                                                         \
@@ -3852,7 +3851,7 @@ fctx_getaddresses(fetchctx_t *fctx) {
 	size_t fetches_allowed = 0;
 	size_t ns_processed = 0;
 
-	FCTXTRACE5("getaddresses", "fctx->depth=", fctx->depth);
+	FCTXTRACE5("getaddresses", "fctx->depth=", (size_t)fctx->depth);
 
 	/*
 	 * Don't pound on remote servers.  (Failsafe!)
@@ -4313,7 +4312,7 @@ incr_query_counters(fetchctx_t *fctx) {
 		isc_log_write(DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
 			      ISC_LOG_DEBUG(3),
 			      "exceeded max queries resolving '%s' "
-			      "(max-recursion-queries, querycount=%u)",
+			      "(max-recursion-queries, querycount=%zu)",
 			      fctx->info, isc_counter_used(fctx->qc));
 	} else if (fctx->gqc != NULL) {
 		result = isc_counter_increment(fctx->gqc);
@@ -4325,7 +4324,7 @@ incr_query_counters(fetchctx_t *fctx) {
 			isc_log_write(DNS_LOGCATEGORY_RESOLVER,
 				      DNS_LOGMODULE_RESOLVER, ISC_LOG_DEBUG(3),
 				      "exceeded global max queries resolving "
-				      "'%s' (max-query-count, querycount=%u)",
+				      "'%s' (max-query-count, querycount=%zu)",
 				      fctx->info, isc_counter_used(fctx->gqc));
 		}
 	}
@@ -4346,13 +4345,13 @@ fctx_try(fetchctx_t *fctx, bool retrying) {
 
 	/* We've already exceeded maximum query count */
 	if (isc_counter_used(fctx->qc) > isc_counter_getlimit(fctx->qc)) {
-		isc_log_write(
-			DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
-			ISC_LOG_DEBUG(3),
-			"exceeded max queries resolving '%s' "
-			"(max-recursion-queries, querycount=%u, maxqueries=%u)",
-			fctx->info, isc_counter_used(fctx->qc),
-			isc_counter_getlimit(fctx->qc));
+		isc_log_write(DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
+			      ISC_LOG_DEBUG(3),
+			      "exceeded max queries resolving '%s' "
+			      "(max-recursion-queries, querycount=%zu, "
+			      "maxqueries=%zu)",
+			      fctx->info, isc_counter_used(fctx->qc),
+			      isc_counter_getlimit(fctx->qc));
 		result = DNS_R_SERVFAIL;
 		goto done;
 	}
@@ -4360,12 +4359,13 @@ fctx_try(fetchctx_t *fctx, bool retrying) {
 	if (fctx->gqc != NULL &&
 	    isc_counter_used(fctx->gqc) > isc_counter_getlimit(fctx->gqc))
 	{
-		isc_log_write(DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
-			      ISC_LOG_DEBUG(3),
-			      "exceeded global max queries resolving '%s' "
-			      "(max-query-count, querycount=%u, maxqueries=%u)",
-			      fctx->info, isc_counter_used(fctx->gqc),
-			      isc_counter_getlimit(fctx->gqc));
+		isc_log_write(
+			DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
+			ISC_LOG_DEBUG(3),
+			"exceeded global max queries resolving '%s' "
+			"(max-query-count, querycount=%zu, maxqueries=%zu)",
+			fctx->info, isc_counter_used(fctx->gqc),
+			isc_counter_getlimit(fctx->gqc));
 		result = DNS_R_SERVFAIL;
 		goto done;
 	}
@@ -5010,7 +5010,7 @@ fctx__create(dns_resolver_t *res, isc_loop_t *loop, const dns_name_t *name,
 		isc_counter_attach(qc, &fctx->qc);
 		isc_log_write(DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
 			      ISC_LOG_DEBUG(9),
-			      "fctx %p(%s): attached to counter %p (%d)", fctx,
+			      "fctx %p(%s): attached to counter %p (%zu)", fctx,
 			      fctx->info, fctx->qc, isc_counter_used(fctx->qc));
 	} else {
 		isc_counter_create(fctx->mctx, res->maxqueries, &fctx->qc);
@@ -5024,7 +5024,7 @@ fctx__create(dns_resolver_t *res, isc_loop_t *loop, const dns_name_t *name,
 		isc_counter_attach(gqc, &fctx->gqc);
 		isc_log_write(DNS_LOGCATEGORY_RESOLVER, DNS_LOGMODULE_RESOLVER,
 			      ISC_LOG_DEBUG(9),
-			      "fctx %p(%s): attached to counter %p (%d)", fctx,
+			      "fctx %p(%s): attached to counter %p (%zu)", fctx,
 			      fctx->info, fctx->gqc,
 			      isc_counter_used(fctx->gqc));
 	}
@@ -5432,7 +5432,7 @@ is_minimal_nsec(dns_rdataset_t *nsecset) {
 		dns_rdata_nsec_t nsec;
 
 		dns_rdataset_current(&rdataset, &rdata);
-		result = dns_rdata_tostruct(&rdata, &nsec, NULL);
+		result = dns_rdata_tostruct(&rdata, &nsec);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 
 		if (nsec.len == sizeof(minimal_typemap) &&
@@ -5572,83 +5572,6 @@ delete_rrset(fetchctx_t *fctx, dns_name_t *name, dns_rdatatype_t type) {
 	dns_db_detachnode(&node);
 }
 
-/*
- * When caching a CNAME, evict other RRsets at the same owner name,
- * according to the RFC specifications.
- *
- * RFC 1034, 3.6.2: Aliases and canonical names
- *   If a CNAME RR is present at a node, no other data should be
- *   present.
- * RFC 2181, 10.1: CNAME resource records
- *   An alias name (label of a CNAME record) may,
- *   if DNSSEC is in use, have SIG, NXT, and KEY RRs, but may have no
- *   other data.
- * RFC 2535, 2.3.5: Special Considerations with CNAME
- * RFC 4034, 3: The RRSIG Resource Record
- *   Because every authoritative RRset in a zone must be protected by a
- *   digital signature, RRSIG RRs must be present for names containing a
- *   CNAME RR.  This is a change to the traditional DNS specification
- *   [RFC1034], which stated that if a CNAME is present for a name, it is
- *   the only type allowed at that name.
- * RFC 4034, 4: The NSEC Resource Record
- *   Because every authoritative name in a zone must be part of the NSEC
- *   chain, NSEC RRs must be present for names containing a CNAME RR.
- *   This is a change to the traditional DNS specification [RFC1034],
- *   which stated that if a CNAME is present for a name, it is the only
- *   type allowed at that name.
- *
- * So types allowed next to CNAME are: KEY, SIG, NXT, RRSIG, and NSEC.
- */
-static void
-evict_cname_other(fetchctx_t *fctx, dns_name_t *name) {
-	isc_result_t result;
-	dns_dbnode_t *node = NULL;
-	dns_rdatasetiter_t *rdsiter = NULL;
-
-	result = dns_db_findnode(fctx->cache, name, false, &node);
-	if (result != ISC_R_SUCCESS) {
-		return;
-	}
-
-	result = dns_db_allrdatasets(fctx->cache, node, NULL, 0, 0, &rdsiter);
-	if (result != ISC_R_SUCCESS) {
-		dns_db_detachnode(&node);
-		return;
-	}
-
-	DNS_RDATASETITER_FOREACH(rdsiter) {
-		dns_rdataset_t rdataset = DNS_RDATASET_INIT;
-		dns_rdatasetiter_current(rdsiter, &rdataset);
-
-		if (NEGATIVE(&rdataset)) {
-			/* Keep all negative entries */
-			dns_rdataset_disassociate(&rdataset);
-			continue;
-		}
-
-		dns_typepair_t typepair = DNS_TYPEPAIR_VALUE(rdataset.type,
-							     rdataset.covers);
-		switch (typepair) {
-		/* NSEC records are allowed */
-		case DNS_TYPEPAIR(dns_rdatatype_nsec):
-		case DNS_SIGTYPEPAIR(dns_rdatatype_nsec):
-		/* Keep the CNAME and its signature */
-		case DNS_TYPEPAIR(dns_rdatatype_cname):
-		case DNS_SIGTYPEPAIR(dns_rdatatype_cname):
-			dns_rdataset_disassociate(&rdataset);
-			continue;
-		default:
-			/* Evict everything else */
-			dns_db_deleterdataset(fctx->cache, node, NULL,
-					      rdataset.type, rdataset.covers);
-			dns_rdataset_disassociate(&rdataset);
-		}
-	}
-
-	dns_rdatasetiter_destroy(&rdsiter);
-	dns_db_detachnode(&node);
-}
-
 static isc_result_t
 cache_rrset(fetchctx_t *fctx, isc_stdtime_t now, dns_name_t *name,
 	    dns_rdataset_t *rdataset, dns_rdataset_t *sigrdataset,
@@ -5703,19 +5626,6 @@ cache_rrset(fetchctx_t *fctx, isc_stdtime_t now, dns_name_t *name,
 		result = dns_db_findnode(fctx->cache, name, true, &node);
 	}
 
-	/*
-	 * Evict CNAME records, according to the RFC rules (see
-	 * evict_cname_other).
-	 *
-	 * Note that a signature is tied to the type it covers and is deleted
-	 * along with the covered RRset in 'delete_rrset()'.
-	 */
-	if (!dns_rdataset_matchestype(rdataset, dns_rdatatype_cname) &&
-	    !dns_rdataset_matchestype(rdataset, dns_rdatatype_nsec))
-	{
-		delete_rrset(fctx, name, dns_rdatatype_cname);
-	}
-
 	if (result == ISC_R_SUCCESS) {
 		result = dns_db_addrdataset(fctx->cache, node, NULL, now,
 					    rdataset, options | equalok, added);
@@ -5764,14 +5674,14 @@ get_and_check_signer_name(dns_name_t *signer, dns_rdataset_t *sigrdataset) {
 
 	rdata = (dns_rdata_t)DNS_RDATA_INIT;
 	dns_rdataset_current(sigrdataset, &rdata);
-	result = dns_rdata_tostruct(&rdata, &rrsig, NULL);
+	result = dns_rdata_tostruct(&rdata, &rrsig);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_name_copy(&rrsig.signer, signer);
 
 	while (dns_rdataset_next(sigrdataset) == ISC_R_SUCCESS) {
 		rdata = (dns_rdata_t)DNS_RDATA_INIT;
 		dns_rdataset_current(sigrdataset, &rdata);
-		result = dns_rdata_tostruct(&rdata, &rrsig, NULL);
+		result = dns_rdata_tostruct(&rdata, &rrsig);
 		INSIST(result == ISC_R_SUCCESS);
 
 		if (!dns_name_equal(signer, &rrsig.signer)) {
@@ -6140,7 +6050,7 @@ findnoqname(fetchctx_t *fctx, dns_message_t *message, dns_name_t *name,
 	DNS_RDATASET_FOREACH(sigrdataset) {
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(sigrdataset, &rdata);
-		result = dns_rdata_tostruct(&rdata, &rrsig, NULL);
+		result = dns_rdata_tostruct(&rdata, &rrsig);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 		/* Wildcard has rrsig.labels < labels - 1. */
 		if (rrsig.labels + 1U >= labels) {
@@ -6447,14 +6357,6 @@ rctx_cachename(respctx_t *rctx, dns_message_t *message, dns_name_t *name) {
 			continue;
 		} else if (result != ISC_R_SUCCESS) {
 			goto cleanup;
-		}
-
-		/*
-		 * If CNAME, delete other RRsets at the same name
-		 * from the cache.
-		 */
-		if (rdataset->type == dns_rdatatype_cname) {
-			evict_cname_other(fctx, name);
 		}
 
 		/* Find the signature for this rdataset */
@@ -6881,7 +6783,7 @@ cache_delegglue(fetchctx_t *fctx, dns_message_t *message,
 		isc_netaddr_t addr = { .family = AF_INET };
 
 		dns_rdataset_current(rdataset, &rdata);
-		dns_rdata_tostruct(&rdata, &a, NULL);
+		dns_rdata_tostruct(&rdata, &a);
 		addr.type.in = a.in_addr;
 		dns_delegset_addaddr(delegset, deleg, &addr);
 		naddrs++;
@@ -6921,7 +6823,7 @@ cache_delegglue6(fetchctx_t *fctx, dns_message_t *message,
 		isc_netaddr_t addr = { .family = AF_INET6 };
 
 		dns_rdataset_current(rdataset, &rdata);
-		dns_rdata_tostruct(&rdata, &aaaa, NULL);
+		dns_rdata_tostruct(&rdata, &aaaa);
 		addr.type.in6 = aaaa.in6_addr;
 		dns_delegset_addaddr(delegset, deleg, &addr);
 		naddrs++;
@@ -6983,7 +6885,7 @@ cache_delegns(fetchctx_t *fctx, const dns_name_t *name, dns_rdataset_t *nsset,
 
 		dns_rdataset_current(nsset, &rdata);
 		INSIST(rdata.type == dns_rdatatype_ns);
-		dns_rdata_tostruct(&rdata, &ns, NULL);
+		dns_rdata_tostruct(&rdata, &ns);
 
 		/* in-domain GLUE */
 		if (dns_name_issubdomain(&ns.name, name)) {
@@ -7213,7 +7115,7 @@ is_answertarget_allowed(fetchctx_t *fctx, dns_name_t *qname, dns_name_t *rname,
 	dns_rdataset_current(rdataset, &rdata);
 	switch (rdataset->type) {
 	case dns_rdatatype_cname:
-		result = dns_rdata_tostruct(&rdata, &cname, NULL);
+		result = dns_rdata_tostruct(&rdata, &cname);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 		tname = &cname.cname;
 		break;
@@ -7223,7 +7125,7 @@ is_answertarget_allowed(fetchctx_t *fctx, dns_name_t *qname, dns_name_t *rname,
 		{
 			return true;
 		}
-		result = dns_rdata_tostruct(&rdata, &dname, NULL);
+		result = dns_rdata_tostruct(&rdata, &dname);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 		dns_name_init(&prefix);
 		tname = dns_fixedname_initname(&fixed);
@@ -9619,7 +9521,14 @@ rctx_referral(respctx_t *rctx) {
 	INSIST(!dns_name_empty(fctx->domain));
 	fcount_decr(fctx);
 
-	dns_delegset_detach(&fctx->delegset);
+	/*
+	 * A forward only forwarder doesn't have a delegset (since it's
+	 * useless), however if the forwarder (oddly) returns us a referral, we
+	 * could end up here.
+	 */
+	if (fctx->delegset != NULL) {
+		dns_delegset_detach(&fctx->delegset);
+	}
 
 	dns_name_copy(rctx->ns_name, fctx->domain);
 
@@ -11102,7 +11011,10 @@ dns_resolver_algorithm_supported(dns_resolver_t *resolver,
 				 unsigned char *private, size_t len) {
 	REQUIRE(VALID_RESOLVER(resolver));
 
-	if ((alg == DST_ALG_DH) || (alg == DST_ALG_INDIRECT)) {
+	/*
+	 * Reject non DNSSEC code points (includes appropriated code points).
+	 */
+	if (!dst_dnssec_algorithm(alg)) {
 		return false;
 	}
 

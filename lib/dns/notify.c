@@ -226,7 +226,7 @@ notify_createmessage(dns_notify_t *notify, dns_message_t **messagep) {
 	 */
 	dns_name_clone(dns_zone_getorigin(notify->zone), tempname);
 	dns_rdataset_makequestion(temprdataset, dns_zone_getclass(notify->zone),
-				  dns_rdatatype_soa);
+				  notify->type);
 	ISC_LIST_APPEND(tempname->list, temprdataset, link);
 	dns_message_addname(message, tempname, DNS_SECTION_QUESTION);
 	tempname = NULL;
@@ -373,6 +373,8 @@ notify_send_toaddr(void *arg) {
 		goto cleanup;
 	}
 
+	isc_netaddr_fromsockaddr(&dstip, &notify->dst);
+
 	CHECK(notify_createmessage(notify, &message));
 
 	if (notify->key != NULL) {
@@ -380,7 +382,6 @@ notify_send_toaddr(void *arg) {
 		key = notify->key;
 		notify->key = NULL;
 	} else {
-		isc_netaddr_fromsockaddr(&dstip, &notify->dst);
 		result = dns_view_getpeertsig(view, &dstip, &key);
 		if (result != ISC_R_SUCCESS && result != ISC_R_NOTFOUND) {
 			notify_log(notify, ISC_LOG_ERROR,

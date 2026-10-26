@@ -468,6 +468,13 @@ stages:
         sudo sh -x build/bin/tests/system/ifconfig.sh up;
       fi
 
+# A second call from after_script, which still runs when
+# RUNNER_SCRIPT_TIMEOUT cuts the script section short.  A container
+# thrashing hard enough manages neither, but then it cannot be cleaned
+# up either.
+.oom_check: &oom_check
+    - sh "$CI_PROJECT_DIR"/util/oom-check.sh || true
+
 .display_pytest_failures: &display_pytest_failures
     - awk '/^=+ FAILURES =+/{flag=1;next}/^=+.*=+$/{flag=0}flag' bin/tests/system/pytest.out.txt || true
     - awk '/^=+ ERRORS =+/{flag=1;next}/^=+.*=+$/{flag=0}flag' bin/tests/system/pytest.out.txt || true
@@ -544,6 +551,7 @@ stages:
     - RET=0
     - >
       ("$PYTEST" --junit-xml="$CI_PROJECT_DIR"/junit_pytest.xml -n "$TEST_PARALLEL_JOBS" | tee pytest.out.txt) || RET=1
+    - sh "$CI_PROJECT_DIR"/util/oom-check.sh || RET=1
     - >
       "$PYTHON" "$CI_PROJECT_DIR"/bind9-qa/ci/postprocess_junit_files.py "$CI_PROJECT_DIR"/junit_pytest.xml --output "$CI_PROJECT_DIR"/junit.xml
     - (exit $RET)
@@ -551,6 +559,7 @@ stages:
     - test "$CLEAN_BUILD_ARTIFACTS_ON_SUCCESS" -eq 0 || ( cd ../../.. && ninja -C build clean >/dev/null 2>&1 )
   after_script:
     - *display_pytest_failures
+    - *oom_check
   artifacts:
     untracked: true
     exclude:
@@ -563,6 +572,7 @@ stages:
   <<: *system_test_job
   after_script:
     - *display_pytest_failures
+    - *oom_check
     - *parse_tsan
 
 .unit_test_common: &unit_test_job
@@ -767,8 +777,9 @@ doctest:
     - *find_pytest
     - cd bin/tests/system/isctest
     - RET=0
+    # The tests/ directories hold system tests, run by the system test jobs.
     - >
-      "$PYTEST" --noconftest --doctest-modules --junit-xml="$CI_PROJECT_DIR/junit_doctest.xml" || RET=1
+      "$PYTEST" --noconftest --doctest-modules --ignore=tests --ignore-glob='*/tests' --junit-xml="$CI_PROJECT_DIR/junit_doctest.xml" || RET=1
     - *git_clone_bind9-qa
     - >
       "$PYTHON" "$CI_PROJECT_DIR"/bind9-qa/ci/postprocess_junit_files.py "$CI_PROJECT_DIR/junit_doctest.xml" --output "$CI_PROJECT_DIR/junit.xml"
@@ -813,6 +824,9 @@ shfmt:
 
 danger:
   <<: *quick_checks_job
+  environment:
+    name: danger
+    action: access
   script:
     - pip install git+https://gitlab.isc.org/isc-projects/hazard.git
     - hazard
@@ -914,51 +928,6 @@ scan-build:
     paths:
       - scan-build.reports/
     when: on_failure
-
-# Coverity Scan analysis upload
-
-.coverity_prep: &coverity_prep
-  - curl --output /tmp/cov-analysis-linux64.md5 https://scan.coverity.com/download/linux64
-         --form project=$COVERITY_SCAN_PROJECT_NAME
-         --form token=$COVERITY_SCAN_TOKEN
-         --form md5=1
-  - curl --output /tmp/cov-analysis-linux64.tgz https://scan.coverity.com/download/linux64
-         --form project=$COVERITY_SCAN_PROJECT_NAME
-         --form token=$COVERITY_SCAN_TOKEN
-  - test "$(md5sum /tmp/cov-analysis-linux64.tgz | awk '{ print $1 }')" = "$(cat /tmp/cov-analysis-linux64.md5)"
-  - tar --extract --gzip --file=/tmp/cov-analysis-linux64.tgz --directory=/tmp
-  - test -d /tmp/cov-analysis-linux64-*
-
-.coverity_build: &coverity_build
-  - /tmp/cov-analysis-linux64-*/bin/cov-build --dir /tmp/cov-int sh -c 'ninja -C ./build -v'
-  - tar --create --gzip --file=/tmp/cov-int.tar.gz --directory /tmp cov-int
-  - curl -v https://scan.coverity.com/builds?project=$COVERITY_SCAN_PROJECT_NAME
-        --form token=$COVERITY_SCAN_TOKEN
-        --form email=bind-changes@isc.org
-        --form file=@/tmp/cov-int.tar.gz
-        --form version="$(git rev-parse --short HEAD)"
-        --form description="$(git rev-parse --short HEAD) / $CI_COMMIT_TITLE / $CI_COMMIT_REF_NAME:$CI_PIPELINE_ID" 2>&1
-        | tee curl-response.txt
-  - grep -q 'Build successfully submitted' curl-response.txt
-
-coverity:
-  <<: *other_checks_job
-  variables:
-    EXTRA_SETUP_FILES: "--native-file ci/coverity.ini"
-  script:
-    - *coverity_prep
-    - *configure
-    - *coverity_build
-  after_script:
-    - mv -v /tmp/cov-int.tar.gz ${CI_PROJECT_DIR}/
-  artifacts:
-    paths:
-      - curl-response.txt
-      - cov-int.tar.gz
-    expire_in: "1 week"
-    when: on_failure
-  rules:
-    - if: '$COVERITY_SCAN_PROJECT_NAME != null && $COVERITY_SCAN_TOKEN != null'
 
 # Simple reproductibilty test, needs an image with meson >=1.6.0
 reproducible-build:
@@ -1080,6 +1049,7 @@ cross-version-config-tests:
     # should not be run.
     - rm -r dlzexternal
     - rm -r dyndb
+    - rm -r allow_query_on
     # This script needs to: 1) fail if the tests fail, 2) fail if
     # the junit.xml file is broken, 3) produce the junit.xml file even if
     # the  tests fail.  Therefore, $RET is used to "cache" the
@@ -1483,6 +1453,7 @@ system:gcc:tarball:
   after_script:
     - cd bind-*
     - *display_pytest_failures
+    - *oom_check
   needs:
     - job: gcc:tarball
       artifacts: true
@@ -1495,6 +1466,47 @@ unit:gcc:tarball:
   needs:
     - job: gcc:tarball
       artifacts: true
+
+# Job checking that the Dockerfile used for the official BIND 9 container
+# images still works.
+
+docker-image:
+  stage: build
+  image: public.ecr.aws/docker/library/docker:latest
+  services:
+    - name: public.ecr.aws/docker/library/docker:dind
+      alias: docker
+  variables:
+    # This job needs no BIND 9 source, only the tarball-create artifact.
+    GIT_STRATEGY: none
+    # Talk to the dind service over plain TCP rather than TLS.
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - VERSION="$(basename build/meson-dist/bind-*.tar.xz .tar.xz)"
+    - VERSION="${VERSION#bind-}"
+    # Build the image from the bind9-docker branch matching this source tree,
+    # replacing the release tarball it normally downloads with the one built
+    # from this source tree.
+    - docker build
+      --build-arg "BIND9_VERSION=${VERSION}"
+      --build-context "tarball=build/meson-dist"
+      --tag "bind9:${VERSION}"
+      "https://gitlab.isc.org/isc-projects/bind9-docker.git#v${VERSION%.*}"
+    - docker run --rm "bind9:${VERSION}" -V
+  needs:
+    - job: tarball-create
+      artifacts: true
+  tags:
+    - docker
+    - linux
+    - amd64
+    - runner-manager
+  rules:
+    - *rule_mr_manual
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $REBASE_ONLY != "1"'
+    - if: '$CI_PIPELINE_SOURCE =~ /^(api|pipeline|trigger|web)$/ && $REBASE_ONLY != "1"'
+      when: manual
+      allow_failure: true
 
 # Jobs for debug GCC builds on openSUSE Tumbleweed (amd64)
 
@@ -1596,6 +1608,8 @@ gcc:asan:
   <<: *build_job
 
 system:gcc:asan:
+  variables:
+    TEST_PARALLEL_JOBS: 3
   <<: *fedora_44_amd64_image
   <<: *system_test_job
   needs:
@@ -1616,6 +1630,8 @@ clang:asan:
   <<: *build_job
 
 system:clang:asan:
+  variables:
+    TEST_PARALLEL_JOBS: 3
   <<: *base_image
   <<: *system_test_job
   <<: *extra_system_tests_triggering_rules
@@ -1787,45 +1803,48 @@ unit:clang:freebsd15:amd64:
   <<: *unit_test_job
   <<: *freebsd_autoscaler_15_amd64_tags
 
-# Build and run tests against the latest git version of libuv
+# Build and run tests with TSAN against the latest git version of libuv
 
-gcc:tumbleweed:libuv-git:amd64:
-  <<: *tumbleweed_latest_amd64_image
+gcc:tsan:libuv-git:amd64:
+  <<: *tsan_fedora_44_amd64_image
   <<: *build_job
   variables:
-    EXTRA_SETUP_FILES: "--native-file ci/tumbleweed.ini"
+    EXTRA_SETUP_FILES: "--native-file ci/tsan.ini --native-file ci/tsan-gcc.ini --native-file ci/libuv-git.ini"
   before_script:
     - *list_installed_package_versions
-    - zypper --non-interactive rm --clean-deps libuv-devel
     - git clone --depth 1 https://github.com/libuv/libuv.git /tmp/libuv
     - cd /tmp/libuv
     - sh autogen.sh
-    - ./configure --prefix="$CI_PROJECT_DIR/libuv"
-    - make -j"$BUILD_PARALLEL_JOBS" CFLAGS=""
+    # Same flags as the libuv build in the tsan-fedora-44 image.
+    - CFLAGS="-rdynamic -ggdb -O2 -Wno-deprecated-declarations -fno-omit-frame-pointer -fno-optimize-sibling-calls -fPIC -fsanitize=thread -Wl,-rpath=/opt/tsan/lib -Wl,--enable-new-dtags" LDFLAGS="-fPIE -fsanitize=thread -Wl,-rpath=/opt/tsan/lib -Wl,--disable-new-dtags" ./configure --prefix="$CI_PROJECT_DIR/libuv"
+    - make -j"$BUILD_PARALLEL_JOBS"
     - make install
     - cd "$CI_PROJECT_DIR"
-    - export PKG_CONFIG_PATH="$CI_PROJECT_DIR/libuv/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
   rules:
     - *rule_source_other_than_mr
 
-system:gcc:tumbleweed:libuv-git:amd64:
-  <<: *tumbleweed_latest_amd64_image
-  <<: *system_test_job
+system:gcc:tsan:libuv-git:amd64:
+  variables:
+    TSAN_SYMBOLIZER_PATH: "${TSAN_SYMBOLIZER_PATH_FEDORA}"
+  <<: *tsan_fedora_44_amd64_image
+  <<: *system_test_tsan_job
   needs:
-    - job: gcc:tumbleweed:libuv-git:amd64
+    - job: gcc:tsan:libuv-git:amd64
       artifacts: true
   rules:
     - *rule_source_other_than_mr
 
-unit:gcc:tumbleweed:libuv-git:amd64:
-  <<: *tumbleweed_latest_amd64_image
-  <<: *unit_test_job
+unit:gcc:tsan:libuv-git:amd64:
+  variables:
+    TSAN_SYMBOLIZER_PATH: "${TSAN_SYMBOLIZER_PATH_FEDORA}"
+  <<: *tsan_fedora_44_amd64_image
+  <<: *unit_test_tsan_job
   before_script:
     - build/named -V > named.version
     - "grep -E '^compiled with libuv version: [0-9]+\\.[0-9]+\\.[0-9]+$' named.version"
     - "grep -E '^linked to libuv version: [0-9]+\\.[0-9]+\\.[0-9]+-dev$' named.version"
   needs:
-    - job: gcc:tumbleweed:libuv-git:amd64
+    - job: gcc:tsan:libuv-git:amd64
       artifacts: true
   rules:
     - *rule_source_other_than_mr
@@ -1921,6 +1940,9 @@ sign:
 
 staging:
   <<: *signer_ssh_job
+  environment:
+    name: staging
+    action: access
   variables:
     RELEASE_TARBALL: bind-${CI_COMMIT_TAG}-release.tar.gz
     SSH_SCRIPT_RUNNER_PRE: |-
@@ -1944,6 +1966,9 @@ staging:
 
 publish-private:
   <<: *signer_ssh_job
+  environment:
+    name: staging
+    action: access
   variables:
     SSH_SCRIPT_CLIENT: |-
       ssh "${STAGING_USER_ACTIONS}@${STAGING_HOST}" "publish-private ${CI_COMMIT_TAG}"
@@ -1964,6 +1989,9 @@ publish-private:
 
 publish:
   <<: *signer_ssh_job
+  environment:
+    name: staging
+    action: access
   before_script:
     - TODAY="$(date +%Y-%m-%d)"
     - SCHEDULED_PUBLICATION="$(curl -m 5 -s "https://gitlab.isc.org/isc-projects/bind9-qa/-/raw/main/releng/metadata.json" | jq -r ".schedule.public")"
@@ -1983,6 +2011,9 @@ publish:
 
 publish-cleanup:
   <<: *base_image
+  environment:
+    name: distros-zulip
+    action: access
   stage: release
   script:
     - *git_clone_bind9-qa
@@ -2011,6 +2042,9 @@ publish-cleanup:
 
 assign-milestones:
   <<: *manual_release_job_qa
+  environment:
+    name: write
+    action: access
   needs:
     - job: sign
       artifacts: false
@@ -2022,15 +2056,20 @@ assign-milestones:
   rules:
     - *rule_tag
 
-# Jobs to update RPMs
+# Jobs to update RPMs (anchors)
 
 .rpm-build-job-common: &rpm_build_job_common
   <<: *manual_release_job_qa
+  allow_failure: false
   # prevent Git push races between pipelines started for different tags
   resource_group: "rpm-build-${SERVICE}"
   after_script:
     - git -C bind/ remote get-url origin | sed "s|\.git$|/-/commit/$(cat commit.txt)|"
     - git -C bind/ show --color "$(cat commit.txt)" | sed "s|^$| |"
+  artifacts:
+    paths:
+      - commit.txt
+    expire_in: "1 month"
 
 .rpm-build-job: &rpm_build_job
   <<: *rpm_build_job_common
@@ -2052,52 +2091,134 @@ assign-milestones:
 
 .rpm-publish-job: &rpm_publish_job
   <<: *manual_release_job_qa
+  allow_failure: false
   script:
     - >
       "${CI_PROJECT_DIR}"/bind9-qa/releng/update_rpms.py publish --service "${SERVICE}" --commit "$(cat "commit.txt")"
+  artifacts:
+    paths:
+      - commit.txt
+    expire_in: "1 month"
+
+.monitor-rpm-job-common: &monitor_rpm_job_common
+  <<: *base_image
+  environment:
+    name: write-zulip
+    action: access
+  stage: release
+  before_script:
+    - *git_clone_bind9-qa
+  after_script:
+    - |
+      if [ "${CI_JOB_STATUS}" = "timedout" ]; then
+        MSG="RPM monitoring timed out for ${CI_JOB_NAME}"
+        MSG="${MSG}, check [job ${CI_JOB_ID}](${CI_JOB_URL})"
+        echo "$MSG" > message.txt
+        "$CI_PROJECT_DIR"/bind9-qa/releng/message_zulip.py --message message.txt --channel bind9-qa --topic "RPM build errors"
+      fi
+  artifacts:
+    paths:
+      - commit.txt
+    expire_in: "1 month"
+
+.monitor-rpm-build-job: &monitor_rpm_build_job
+  <<: *monitor_rpm_job_common
+  script:
+    - >
+      "${CI_PROJECT_DIR}"/bind9-qa/releng/update_rpms.py monitor-build --service "${SERVICE}" --version "${CI_COMMIT_TAG}" --commit "$(cat "commit.txt")"
+
+.monitor-rpm-publish-job: &monitor_rpm_publish_job
+  <<: *monitor_rpm_job_common
+  script:
+    - >
+      "${CI_PROJECT_DIR}"/bind9-qa/releng/update_rpms.py monitor-publish --service "${SERVICE}" --commit "$(cat "commit.txt")"
 
 # Update Cloudsmith packages
 
 rpms-cloudsmith-build:
   <<: *rpm_build_job
+  environment:
+    name: write
+    action: access
   variables:
     SERVICE: cloudsmith
   rules:
     - *rule_tag_open_source_maintenance
-  artifacts:
-    paths:
-      - commit.txt
-    expire_in: "1 month"
+
+monitor-rpms-cloudsmith-build:
+  <<: *monitor_rpm_build_job
+  variables:
+    SERVICE: cloudsmith
+  rules:
+    - *rule_tag_open_source_maintenance
+  needs:
+    - job: rpms-cloudsmith-build
+      artifacts: true
 
 rpms-cloudsmith-build-private:
   <<: *rpm_build_job_private
+  environment:
+    name: write
+    action: access
   variables:
     SERVICE: cloudsmith
   rules:
     - *rule_tag_security_or_subscription
-  artifacts:
-    paths:
-      - commit.txt
-    expire_in: "1 month"
+
+monitor-rpms-cloudsmith-build-private:
+  <<: *monitor_rpm_build_job
+  variables:
+    SERVICE: cloudsmith
+  rules:
+    - *rule_tag_security_or_subscription
+  needs:
+    - job: rpms-cloudsmith-build-private
+      artifacts: true
 
 # Publish Cloudsmith packages
 
 rpms-cloudsmith-publish:
   <<: *rpm_publish_job
+  environment:
+    name: write
+    action: access
   variables:
     SERVICE: cloudsmith
   needs:
-    - job: rpms-cloudsmith-build
+    - job: monitor-rpms-cloudsmith-build
+      artifacts: true
+  rules:
+    - *rule_tag_open_source_maintenance
+
+monitor-rpms-cloudsmith-publish:
+  <<: *monitor_rpm_publish_job
+  variables:
+    SERVICE: cloudsmith
+  needs:
+    - job: rpms-cloudsmith-publish
       artifacts: true
   rules:
     - *rule_tag_open_source_maintenance
 
 rpms-cloudsmith-publish-private:
   <<: *rpm_publish_job
+  environment:
+    name: write
+    action: access
   variables:
     SERVICE: cloudsmith
   needs:
-    - job: rpms-cloudsmith-build-private
+    - job: monitor-rpms-cloudsmith-build-private
+      artifacts: true
+  rules:
+    - *rule_tag_security_or_subscription
+
+monitor-rpms-cloudsmith-publish-private:
+  <<: *monitor_rpm_publish_job
+  variables:
+    SERVICE: cloudsmith
+  needs:
+    - job: rpms-cloudsmith-publish-private
       artifacts: true
   rules:
     - *rule_tag_security_or_subscription
@@ -2106,8 +2227,21 @@ rpms-cloudsmith-publish-private:
 
 rpms-copr:
   <<: *rpm_build_job
+  environment:
+    name: write
+    action: access
   variables:
     SERVICE: copr
+  rules:
+    - *rule_tag_open_source
+
+monitor-rpms-copr:
+  <<: *monitor_rpm_build_job
+  variables:
+    SERVICE: copr
+  needs:
+    - job: rpms-copr
+      artifacts: true
   rules:
     - *rule_tag_open_source
 
@@ -2130,8 +2264,10 @@ rpms-copr:
 # Job updating the Docker image for a specific release
 
 update-docker-image:
-  <<: *base_image
-  <<: *manual_release_job
+  <<: *manual_release_job_qa
+  environment:
+    name: write-zulip
+    action: access
   variables:
     RELEASE_DIRECTORY: "bind-${CI_COMMIT_TAG}-release"
   script:
@@ -2147,8 +2283,7 @@ update-docker-image:
     - git commit -m "Version bump to ${VERSION}" Dockerfile
     - git push
     - COMMIT_SHA="$(git log -n1 --format=%H)"
-    - *git_clone_bind9-qa
-    - echo "Docker image for BIND ${BRANCH} updated to version ${CI_COMMIT_TAG}, commit [${COMMIT_SHA}](${DOCKER_PROJECT}/-/commit/${COMMIT_SHA})" > message.txt
+    - echo "Docker image definition for BIND ${BRANCH} updated to version ${CI_COMMIT_TAG}, commit [${COMMIT_SHA}](${DOCKER_PROJECT}/-/commit/${COMMIT_SHA})" > message.txt
     - >
       "$CI_PROJECT_DIR"/bind9-qa/releng/message_zulip.py --message message.txt --channel bind9 --topic Packaging
   needs:
@@ -2158,13 +2293,44 @@ update-docker-image:
       artifacts: false
   rules:
     - *rule_tag_open_source
-  tags:
-    - smalljob
+
+monitor-update-docker-image:
+  <<: *base_image
+  stage: release
+  environment:
+    name: write-zulip
+    action: access
+  variables:
+    DOCKERHUB_REPO_URL: "https://hub.docker.com/v2/namespaces/internetsystemsconsortium/repositories/bind9"
+  before_script:
+    - *git_clone_bind9-qa
+  script:
+    - VERSION="${CI_COMMIT_TAG#v}"
+    - DOCKER_TAG="${VERSION%.*}"
+    - DOCKERHUB_TAG_URL="${DOCKERHUB_REPO_URL}/tags/${DOCKER_TAG}"
+    - TAG_CREATED_AT="$(curl -s -L https://gitlab.isc.org/api/v4/projects/1/repository/tags/"${CI_COMMIT_TAG}" | jq '.created_at[:19] + "Z" | fromdateiso8601')"
+    - while ! curl -s "${DOCKERHUB_TAG_URL}" | jq -e '(.last_updated[:19] + "Z" | fromdateiso8601) > '"${TAG_CREATED_AT}"; do sleep 300; done
+  after_script:
+    - |
+      if [ "${CI_JOB_STATUS}" != "success" ]; then
+        MSG="Docker build monitoring ${CI_JOB_STATUS}"
+        MSG="${MSG}, check [job ${CI_JOB_ID}](${CI_JOB_URL})"
+        echo "$MSG" > message.txt
+        "$CI_PROJECT_DIR"/bind9-qa/releng/message_zulip.py --message message.txt --channel bind9-qa --topic "Docker build errors"
+      fi
+  needs:
+    - job: update-docker-image
+      artifacts: false
+  rules:
+    - *rule_tag_open_source
 
 # Job creating the release announcement MR in Printing Press
 
 prepare-release-announcement:
   <<: *printing_press_job
+  environment:
+    name: write-zulip
+    action: access
   variables:
     DOCUMENT: release-announcement
   rules:
@@ -2176,6 +2342,9 @@ prepare-release-announcement:
 
 prepare-evn:
   <<: *printing_press_job
+  environment:
+    name: write
+    action: access
   variables:
     DOCUMENT: evn
   rules:
@@ -2185,6 +2354,9 @@ prepare-evn:
 
 prepare-preannouncement:
   <<: *printing_press_job
+  environment:
+    name: write
+    action: access
   variables:
     DOCUMENT: security-preannouncement
   rules:
@@ -2194,6 +2366,9 @@ prepare-preannouncement:
 
 prepare-packager-notification:
   <<: *printing_press_job
+  environment:
+    name: distros-write-zulip
+    action: access
   before_script:
     - *git_clone_bind9-qa
     # produce distros_git_url.txt to be immediately read by printing_press_mr.py
@@ -2208,6 +2383,9 @@ prepare-packager-notification:
 
 prepare-post-disclosure-notification:
   <<: *printing_press_job
+  environment:
+    name: write
+    action: access
   variables:
     DOCUMENT: post-disclosure-notification
   rules:
@@ -2217,6 +2395,9 @@ prepare-post-disclosure-notification:
 
 merge-tag:
   <<: *manual_release_job_qa
+  environment:
+    name: write
+    action: access
   variables:
     GIT_DEPTH: 100
   needs:
@@ -2235,6 +2416,9 @@ merge-tag:
 
 cherry-pick-tag:
   <<: *manual_release_job_qa
+  environment:
+    name: write
+    action: access
   variables:
     GIT_DEPTH: 100
   needs:
@@ -2248,6 +2432,9 @@ cherry-pick-tag:
 
 update-stable-tag:
   <<: *manual_release_job_qa
+  environment:
+    name: write
+    action: access
   needs:
     # TODO: if necessary, update job name after pushing tags from within CI is implemented
     - job: publish
@@ -2280,6 +2467,9 @@ update-stable-tag:
 # set it to the name of the target customer.
 customer-git:branch:
   <<: *customer_git
+  environment:
+    name: customer
+    action: access
   needs: []
   rules:
     - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -2298,6 +2488,9 @@ customer-git:branch:
 
 customer-git:tag:
   <<: *customer_git
+  environment:
+    name: customer
+    action: access
   needs:
     - job: release
       artifacts: false
@@ -2375,30 +2568,41 @@ respdiff:recent-named:
   variables:
     EXTRA_SETUP_FILES: "--native-file ci/respdiff.ini"
     MAX_DISAGREEMENTS_PERCENTAGE: "0.15"
-  allow_failure: true  # remove once B!12357 is part of a public release
 
 # Performance tests
 
 shotgun:udp:
   <<: *shotgun_job
+  environment:
+    name: zulip
+    action: access
   variables:
     SHOTGUN_SCENARIO: udp
     SHOTGUN_TRAFFIC_MULTIPLIER: 15
 
 shotgun:tcp:
   <<: *shotgun_job
+  environment:
+    name: zulip
+    action: access
   variables:
     SHOTGUN_SCENARIO: tcp
     SHOTGUN_TRAFFIC_MULTIPLIER: 12
 
 shotgun:dot:
   <<: *shotgun_job
+  environment:
+    name: zulip
+    action: access
   variables:
     SHOTGUN_SCENARIO: dot
     SHOTGUN_TRAFFIC_MULTIPLIER: 5
 
 shotgun:doh-get:
   <<: *shotgun_job
+  environment:
+    name: zulip
+    action: access
   variables:
     SHOTGUN_SCENARIO: doh-get
     SHOTGUN_TRAFFIC_MULTIPLIER: 2
@@ -2500,6 +2704,9 @@ pairwise:
 
 backports:
   <<: *post_merge
+  environment:
+    name: write
+    action: access
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_REF_NAME =~ /^security-(main|bind-9\.[0-9]+)$/ || $CI_COMMIT_REF_NAME =~ /^bind-9\.[0-9]+$/ || $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH)'
   script:
@@ -2510,6 +2717,9 @@ backports:
 
 merged-metadata:
   <<: *post_merge
+  environment:
+    name: write
+    action: access
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_REF_NAME =~ /^security-(main|bind-9\.[0-9]+)$/ || $CI_COMMIT_REF_NAME =~ /^bind-9\.[0-9]+(-sub)?$/ || $CI_COMMIT_REF_NAME =~ /^v9\.[0-9]+\.[0-9]+-release$/ || $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH)'
   script:
@@ -2554,6 +2764,7 @@ merged-metadata:
       REASON_DETAILS=""
       if git rebase --abort; then
           # Rebase failed; try applying recent commits from the base branch on top of the branch being rebased to determine which one introduces conflicts
+          REASON="merge conflict introduced by a change in the base branch"
           git rebase --rebase-merges "${CI_COMMIT_SHA}" "${BASE_COMMIT}" || true
           CONFLICT_COMMIT="$(git rev-parse REBASE_HEAD)"
           CONFLICT_COMMIT_AUTHOR_LOGIN="$(git log --max-count=1 --pretty="%al" "${CONFLICT_COMMIT}")"
@@ -2564,10 +2775,11 @@ merged-metadata:
             CONFLICT_COMMIT_AUTHOR="\`${CONFLICT_COMMIT_AUTHOR_LOGIN}\`"
           fi
           CONFLICT_COMMIT_MERGE="$(git log --reverse --merges --pretty="%H" "${CONFLICT_COMMIT}..${BASE_COMMIT}" | head -1)"
-          read -r CONFLICT_COMMIT_MERGE_REQUEST_PROJECT CONFLICT_COMMIT_MERGE_REQUEST_ID < <(git log --max-count=1 "${CONFLICT_COMMIT_MERGE}" | sed -n -E 's|^\s*See merge request ([a-z-]+/bind9)!([0-9]+).*|\1 \2|p' | head -1)
-          REASON="merge conflict introduced by a change in the base branch"
-          REASON_DETAILS="${REASON_DETAILS}\n**First bad commit**: [${CONFLICT_COMMIT}](https://gitlab.isc.org/${CONFLICT_COMMIT_MERGE_REQUEST_PROJECT}/-/commit/${CONFLICT_COMMIT}) (authored by ${CONFLICT_COMMIT_AUTHOR})"
-          REASON_DETAILS="${REASON_DETAILS}\n**First bad merge request**: https://gitlab.isc.org/${CONFLICT_COMMIT_MERGE_REQUEST_PROJECT}/-/merge_requests/${CONFLICT_COMMIT_MERGE_REQUEST_ID}"
+          if [ -n "${CONFLICT_COMMIT_MERGE}" ]; then
+            read -r CONFLICT_COMMIT_MERGE_REQUEST_PROJECT CONFLICT_COMMIT_MERGE_REQUEST_ID < <(git log --max-count=1 "${CONFLICT_COMMIT_MERGE}" | sed -n -E 's|^\s*See merge request ([a-z-]+/bind9)!([0-9]+).*|\1 \2|p' | head -1)
+            REASON_DETAILS="${REASON_DETAILS}\n**First bad commit**: [${CONFLICT_COMMIT}](https://gitlab.isc.org/${CONFLICT_COMMIT_MERGE_REQUEST_PROJECT}/-/commit/${CONFLICT_COMMIT}) (authored by ${CONFLICT_COMMIT_AUTHOR})"
+            REASON_DETAILS="${REASON_DETAILS}\n**First bad merge request**: https://gitlab.isc.org/${CONFLICT_COMMIT_MERGE_REQUEST_PROJECT}/-/merge_requests/${CONFLICT_COMMIT_MERGE_REQUEST_ID}"
+          fi
       else
           # Rebase did not fail; most likely, this is a build failure, or the job was canceled
           if [ "${CI_JOB_STATUS}" = "failed" ]; then
@@ -2604,5 +2816,8 @@ autorebase-trigger-security:
 
 autorebase-security:
   <<: *autorebase
+  environment:
+    name: api-write-zulip
+    action: access
   rules:
     - if: '$CI_PROJECT_NAMESPACE == "isc-private" && $CI_PIPELINE_SOURCE == "pipeline" && $CI_COMMIT_REF_NAME =~ /^security-(main|bind-9\.[0-9]+)$/ && $REBASE_ONLY == "1" && $CI_COMMIT_REF_NAME =~ $AUTOREBASED_BRANCHES'

@@ -338,10 +338,9 @@ chase_cnamechain(dns_message_t *msg, dns_name_t *qname) {
 		check_result(result, "dns_rdataset_first");
 		dns_rdata_reset(&rdata);
 		dns_rdataset_current(rdataset, &rdata);
-		result = dns_rdata_tostruct(&rdata, &cname, NULL);
+		result = dns_rdata_tostruct(&rdata, &cname);
 		check_result(result, "dns_rdata_tostruct");
 		dns_name_copy(&cname.cname, qname);
-		dns_rdata_freestruct(&cname);
 	}
 }
 
@@ -644,6 +643,7 @@ parse_args(bool is_batchfile, int argc, char **argv) {
 	dns_rdatatype_t rdtype;
 	dns_rdataclass_t rdclass;
 	uint32_t serial = 0;
+	const char *ixfrserial = NULL;
 
 	UNUSED(is_batchfile);
 
@@ -670,13 +670,13 @@ parse_args(bool is_batchfile, int argc, char **argv) {
 			lookup->recurse = false;
 			break;
 		case 't':
-			if (strncasecmp(isc_commandline_argument, "ixfr=", 5) ==
-			    0)
+			if ((ixfrserial = isc_string_casestripprefix(
+				     isc_commandline_argument, "ixfr=")) !=
+			    NULL)
 			{
 				rdtype = dns_rdatatype_ixfr;
 				/* XXXMPA add error checking */
-				serial = strtoul(isc_commandline_argument + 5,
-						 NULL, 10);
+				serial = strtoul(ixfrserial, NULL, 10);
 				result = ISC_R_SUCCESS;
 			} else {
 				tr.base = isc_commandline_argument;

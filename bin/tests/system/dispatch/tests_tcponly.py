@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0.  If a copy of the MPL was not distributed with this
+# License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, you can obtain one at https://mozilla.org/MPL/2.0/.
 #
 # See the COPYRIGHT file distributed with this work for additional
@@ -16,15 +16,8 @@ import dns.message
 import dns.name
 import dns.rdataclass
 import dns.rdatatype
-import pytest
 
 import isctest
-
-pytestmark = pytest.mark.extra_artifacts(
-    [
-        "ans*/ans.run",
-    ]
-)
 
 
 def _count_received(ans, qname, protocol):

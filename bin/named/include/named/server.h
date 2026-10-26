@@ -52,14 +52,12 @@ struct named_server {
 
 	ns_server_t *sctx;
 
-	char *statsfile;    /*%< Statistics file name */
-	char *dumpfile;	    /*%< Dump file name */
-	char *secrootsfile; /*%< Secroots file name */
-	char *recfile;	    /*%< Recursive file name */
-	bool  version_set;  /*%< User has set version */
-	char *version;	    /*%< User-specified version */
-	bool  hostname_set; /*%< User has set hostname */
-	char *hostname;	    /*%< User-specified hostname */
+	char	    *statsfile;	   /*%< Statistics file name */
+	char	    *dumpfile;	   /*%< Dump file name */
+	char	    *secrootsfile; /*%< Secroots file name */
+	char	    *recfile;	   /*%< Recursive file name */
+	isc_region_t version;	   /*%< User-specified version */
+	isc_region_t hostname;	   /*%< User-specified hostname */
 
 	/* Server data structures. */
 	dns_zonemgr_t	  *zonemgr;
@@ -109,8 +107,7 @@ struct named_server {
 	isc_signal_t *sigusr1;
 
 	cfg_aclconfctx_t *aclctx;
-	isc_buffer_t	 *userconftext;
-	isc_buffer_t	 *effectivetext;
+	cfg_obj_t	 *userconfig;
 	cfg_obj_t	 *effectiveconfig;
 };
 

@@ -303,7 +303,7 @@ find_nsec_signer(dns_validator_t *val, dns_rdataset_t *sigp,
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(sigp, &rdata);
 
-		isc_result_t result = dns_rdata_tostruct(&rdata, &sig, NULL);
+		isc_result_t result = dns_rdata_tostruct(&rdata, &sig);
 		if (result != ISC_R_SUCCESS) {
 			validator_log(val, ISC_LOG_DEBUG(3),
 				      "is_insecure_referral: NSEC "
@@ -504,7 +504,7 @@ trynsec3:
 		DNS_RDATASET_FOREACH(&set) {
 			dns_rdata_t rdata = DNS_RDATA_INIT;
 			dns_rdataset_current(&set, &rdata);
-			(void)dns_rdata_tostruct(&rdata, &nsec3, NULL);
+			(void)dns_rdata_tostruct(&rdata, &nsec3);
 			if (nsec3.hash != 1) {
 				continue;
 			}
@@ -1270,9 +1270,10 @@ notfound:
 }
 
 /*%
- * Returns true if proceeding would stall the SHARED fetch: either the
- * fetch cannot advance an alias chain, or an ancestor is already
- * resolving the same (name, type).
+ * Reject validation of the same (name, type) as an ancestor.
+ *
+ * DS at a CNAME owner may be needed to prove insecurity. Fetch loops are
+ * checked by dns_resolver_createfetch().
  */
 static bool
 check_deadlock(dns_validator_t *val, dns_name_t *name, dns_rdatatype_t type,
@@ -1280,27 +1281,6 @@ check_deadlock(dns_validator_t *val, dns_name_t *name, dns_rdatatype_t type,
 	for (dns_validator_t *cur = val; cur != NULL; cur = cur->parent) {
 		if (!dns_name_equal(cur->name, name)) {
 			continue;
-		}
-
-		/*
-		 * Validating a chaining CNAME: a fetch at the alias's own
-		 * name cannot advance the chain (no other type can live at
-		 * a CNAME owner, so e.g. the DS/DNSKEY needed for an
-		 * insecurity proof cannot be there) and would only
-		 * self-join the in-flight fetch.  A chaining DNAME is
-		 * different: it aliases only the names below its owner, so
-		 * the owner itself may legitimately hold the DNSKEY or DS
-		 * this validation needs (e.g. a DNAME at a zone apex).
-		 */
-		if (cur->rdataset != NULL &&
-		    cur->rdataset->attributes.chaining &&
-		    cur->rdataset->type == dns_rdatatype_cname)
-		{
-			validator_log(
-				val, ISC_LOG_DEBUG(3),
-				"fetch would not advance the alias chain: "
-				"aborting validation");
-			return true;
 		}
 
 		/*
@@ -1366,6 +1346,11 @@ create_fetch(dns_validator_t *val, dns_name_t *name, dns_rdatatype_t type,
 		0, fopts, 0, val->qc, val->gqc, val->parent_fetch, val->loop,
 		callback, val, &val->edectx, &val->frdataset,
 		&val->fsigrdataset, &val->fetch);
+	if (result == DNS_R_LOOPDETECTED) {
+		validator_log(val, ISC_LOG_DEBUG(3),
+			      "fetch would join a fetch waiting on this "
+			      "validation: aborting validation");
+	}
 	if (result != ISC_R_SUCCESS) {
 		dns_validator_detach(&val);
 	}
@@ -1374,16 +1359,7 @@ create_fetch(dns_validator_t *val, dns_name_t *name, dns_rdatatype_t type,
 }
 
 /*%
- * Start a fetch for the DS RRset at 'name', which lives in the parent zone.
- *
- * If the delegation database already has a usable delegation for that parent,
- * pass it to the resolver as a hint so the fetch is anchored at the parent
- * zone cut.  DS is an at-parent type, so the resolver derives the same cut on
- * its own for a hintless query; supplying it explicitly additionally gives the
- * resolver's fetch loop detection a zone cut to match on, which it does not
- * have for a fetch started without a hint.  The lookup fails harmlessly if the
- * parent delegation is expired or does not line up with the labels in 'name',
- * leaving a hintless DS fetch.
+ * Fetch DS from the parent, using a cached delegation hint if available.
  */
 static isc_result_t
 create_ds_fetch(dns_validator_t *val, dns_name_t *name, isc_job_cb callback,
@@ -1487,7 +1463,7 @@ select_signing_key(dns_validator_t *val, dns_rdataset_t *rdataset) {
 		isc_region_t r;
 
 		dns_rdataset_current(rdataset, &rdata);
-		dns_rdata_tostruct(&rdata, &key, NULL); /* can't fail */
+		dns_rdata_tostruct(&rdata, &key); /* can't fail */
 
 		if (key.algorithm != siginfo->algorithm ||
 		    (key.flags & DNS_KEYFLAG_REVOKE) != 0 ||
@@ -1741,7 +1717,7 @@ selfsigned_dnskey(dns_validator_t *val) {
 		dns_keytag_t keytag;
 
 		dns_rdataset_current(rdataset, &keyrdata);
-		result = dns_rdata_tostruct(&keyrdata, &key, NULL);
+		result = dns_rdata_tostruct(&keyrdata, &key);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 		keytag = compute_keytag(&keyrdata);
 
@@ -1750,7 +1726,7 @@ selfsigned_dnskey(dns_validator_t *val) {
 			dst_key_t *dstkey = NULL;
 
 			dns_rdataset_current(sigrdataset, &sigrdata);
-			result = dns_rdata_tostruct(&sigrdata, &sig, NULL);
+			result = dns_rdata_tostruct(&sigrdata, &sig);
 			RUNTIME_CHECK(result == ISC_R_SUCCESS);
 
 			if (sig.algorithm != key.algorithm ||
@@ -2104,7 +2080,7 @@ validate_answer_process(void *arg) {
 		val->siginfo = isc_mem_get(val->view->mctx,
 					   sizeof(*val->siginfo));
 	}
-	CHECK(dns_rdata_tostruct(&val->rdata, val->siginfo, NULL));
+	CHECK(dns_rdata_tostruct(&val->rdata, val->siginfo));
 
 	/*
 	 * At this point we could check that the signature algorithm
@@ -2363,7 +2339,7 @@ check_signer(dns_validator_t *val, dns_rdata_t *keyrdata, uint16_t keyid,
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 
 		dns_rdataset_current(&rdataset, &rdata);
-		result = dns_rdata_tostruct(&rdata, &sig, NULL);
+		result = dns_rdata_tostruct(&rdata, &sig);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 		if (keyid != sig.keyid || algorithm != sig.algorithm) {
 			continue;
@@ -2509,7 +2485,7 @@ validate_dnskey_dsset(dns_validator_t *val) {
 	unsigned int datalen = 0;
 
 	dns_rdataset_current(val->dsset, &dsrdata);
-	result = dns_rdata_tostruct(&dsrdata, &ds, NULL);
+	result = dns_rdata_tostruct(&dsrdata, &ds);
 	RUNTIME_CHECK(result == ISC_R_SUCCESS);
 
 	if (ds.digest_type == DNS_DSDIGEST_SHA1 && val->digest_sha1 == false) {
@@ -2610,7 +2586,7 @@ validate_dnskey_dsset(dns_validator_t *val) {
 	 * Figure out if the private algorithm is supported now that we have
 	 * found a matching dnskey.
 	 */
-	dns_rdata_tostruct(&keyrdata, &key, NULL);
+	dns_rdata_tostruct(&keyrdata, &key);
 	if (data == NULL && (ds.algorithm == DNS_KEYALG_PRIVATEDNS ||
 			     ds.algorithm == DNS_KEYALG_PRIVATEOID))
 	{
@@ -2815,7 +2791,7 @@ validate_dnskey(void *arg) {
 	DNS_RDATASET_FOREACH(val->dsset) {
 		dns_rdata_t dsrdata = DNS_RDATA_INIT;
 		dns_rdataset_current(val->dsset, &dsrdata);
-		result = dns_rdata_tostruct(&dsrdata, &ds, NULL);
+		result = dns_rdata_tostruct(&dsrdata, &ds);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 
 		if (!dns_resolver_ds_digest_supported(
@@ -2973,10 +2949,9 @@ valid_nsec_signer(dns_validator_t *val, dns_name_t *name,
 		dns_rdata_rrsig_t sig = { 0 };
 
 		dns_rdataset_current(sigrdataset, &rdata);
-		CHECK(dns_rdata_tostruct(&rdata, &sig, NULL));
+		CHECK(dns_rdata_tostruct(&rdata, &sig));
 
 		bool equal = dns_name_equal(zonename, &sig.signer);
-		dns_rdata_freestruct(&sig);
 		if (!equal) {
 			validator_log(val, ISC_LOG_DEBUG(3),
 				      "ignoring NSEC wildcard proof from a "
@@ -3541,7 +3516,7 @@ check_ds_private(dns_rdataset_t *rdataset) {
 	{
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(rdataset, &rdata);
-		result = dns_rdata_tostruct(&rdata, &ds, NULL);
+		result = dns_rdata_tostruct(&rdata, &ds);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 		if (ds.algorithm == DNS_KEYALG_PRIVATEDNS ||
 		    ds.algorithm == DNS_KEYALG_PRIVATEOID)
@@ -3573,7 +3548,7 @@ check_ds_algs(dns_validator_t *val, dns_name_t *name,
 		size_t datalen = 0;
 
 		dns_rdataset_current(dsrdataset, &dsrdata);
-		result = dns_rdata_tostruct(&dsrdata, &ds, NULL);
+		result = dns_rdata_tostruct(&dsrdata, &ds);
 		RUNTIME_CHECK(result == ISC_R_SUCCESS);
 
 		/*
@@ -3608,8 +3583,7 @@ check_ds_algs(dns_validator_t *val, dns_name_t *name,
 					seen_private = true;
 					continue;
 				}
-				result = dns_rdata_tostruct(&keyrdata, &key,
-							    NULL);
+				result = dns_rdata_tostruct(&keyrdata, &key);
 				RUNTIME_CHECK(result == ISC_R_SUCCESS);
 				data = key.data;
 				datalen = key.datalen;

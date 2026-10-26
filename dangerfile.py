@@ -1,4 +1,3 @@
-############################################################################
 # Copyright (C) Internet Systems Consortium, Inc. ("ISC")
 #
 # SPDX-License-Identifier: MPL-2.0
@@ -9,7 +8,6 @@
 #
 # See the COPYRIGHT file distributed with this work for additional
 # information regarding copyright ownership.
-############################################################################
 
 import glob
 import os
@@ -63,7 +61,7 @@ is_full_backport = is_backport and "Backport::Partial" not in mr_labels
 
 gl = gitlab.Gitlab(
     url=f"https://{os.environ['CI_SERVER_HOST']}",
-    private_token=os.environ["BIND_TEAM_API_TOKEN"],
+    private_token=os.environ["DANGER_GITLAB_API_TOKEN"],
 )
 proj = gl.projects.get(os.environ["CI_PROJECT_ID"])
 mr = proj.mergerequests.get(os.environ["CI_MERGE_REQUEST_IID"])
@@ -204,7 +202,7 @@ ASSISTED_BY_VALID_RE = re.compile(
 # given in CONTRIBUTING.md (git, compilers, meson, ninja, editors,
 # clang-format, black, ruff) with other formatters, generic linters, and
 # build/test runners commonly invoked by .gitlab-ci.yml.  Specialized
-# analysis tools (coccinelle, clang-tidy, AFL, Coverity, cppcheck,
+# analysis tools (coccinelle, clang-tidy, AFL, cppcheck,
 # valgrind, sanitizers) are intentionally absent.
 ASSISTED_BY_BASIC_TOOL_RE = re.compile(
     r"\b("
@@ -296,7 +294,7 @@ for commit in danger.git.commits:
                 "Per `CONTRIBUTING.md`, basic dev tools (git, compilers, "
                 "build systems, editors, formatters, generic linters, "
                 "etc.) should not be listed.  Only specialized analysis "
-                "tools (e.g. coccinelle, clang-tidy, AFL, Coverity) "
+                "tools (e.g. coccinelle, clang-tidy, AFL) "
                 "belong in the trailer."
             )
     match = MR_TITLE_RE.match(subject)
@@ -568,7 +566,7 @@ for log_level in user_visible_log_levels:
 # SYSTEM TEST FILES
 ###############################################################################
 #
-# FAIL if newly added system test directory contains an underscore (invalid char)
+# FAIL if newly added system test directory contains a hyphen (invalid char)
 # FAIL if there are no pytest files in the system test directory
 # FAIL if the pytest glue file for tests.sh is missing
 
@@ -599,7 +597,7 @@ for testname in testnames:
             "`tests_*.py` pytest file."
         )
     tests_sh_exists = os.path.exists(f"{dirpath}/tests.sh")
-    glue_file_name = f"tests_sh_{testname.replace('-', '_')}.py"
+    glue_file_name = f"tests_sh_{testname}.py"
     tests_sh_py_exists = os.path.exists(f"{dirpath}/{glue_file_name}")
     if tests_sh_exists and not tests_sh_py_exists:
         fail(

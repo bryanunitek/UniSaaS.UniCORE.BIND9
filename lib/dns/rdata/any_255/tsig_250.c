@@ -263,8 +263,6 @@ fromwire_any_tsig(ARGS_FROMWIRE) {
 	UNUSED(type);
 	UNUSED(rdclass);
 
-	dctx = dns_decompress_setpermitted(dctx, false);
-
 	/*
 	 * Algorithm Name.
 	 */
@@ -461,7 +459,7 @@ tostruct_any_tsig(ARGS_TOSTRUCT) {
 	dns_name_init(&alg);
 	dns_name_fromregion(&alg, &sr);
 	dns_name_init(&tsig->algorithm);
-	name_duporclone(&alg, mctx, &tsig->algorithm);
+	dns_name_clone(&alg, &tsig->algorithm);
 
 	isc_region_consume(&sr, name_length(&tsig->algorithm));
 
@@ -492,7 +490,7 @@ tostruct_any_tsig(ARGS_TOSTRUCT) {
 	 * Signature.
 	 */
 	INSIST(sr.length >= tsig->siglen);
-	tsig->signature = mem_maybedup(mctx, sr.base, tsig->siglen);
+	tsig->signature = sr.base;
 	isc_region_consume(&sr, tsig->siglen);
 
 	/*
@@ -517,32 +515,9 @@ tostruct_any_tsig(ARGS_TOSTRUCT) {
 	 * Other.
 	 */
 	INSIST(sr.length == tsig->otherlen);
-	tsig->other = mem_maybedup(mctx, sr.base, tsig->otherlen);
+	tsig->other = sr.base;
 
-	tsig->mctx = mctx;
 	return ISC_R_SUCCESS;
-}
-
-static void
-freestruct_any_tsig(ARGS_FREESTRUCT) {
-	dns_rdata_any_tsig_t *tsig = (dns_rdata_any_tsig_t *)source;
-
-	REQUIRE(tsig != NULL);
-	REQUIRE(tsig->common.rdtype == dns_rdatatype_tsig);
-	REQUIRE(tsig->common.rdclass == dns_rdataclass_any);
-
-	if (tsig->mctx == NULL) {
-		return;
-	}
-
-	dns_name_free(&tsig->algorithm, tsig->mctx);
-	if (tsig->signature != NULL) {
-		isc_mem_free(tsig->mctx, tsig->signature);
-	}
-	if (tsig->other != NULL) {
-		isc_mem_free(tsig->mctx, tsig->other);
-	}
-	tsig->mctx = NULL;
 }
 
 static isc_result_t

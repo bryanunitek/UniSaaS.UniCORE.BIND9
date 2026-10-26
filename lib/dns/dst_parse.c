@@ -533,7 +533,8 @@ dst__privstruct_parse(dst_key_t *key, unsigned int alg, isc_lex_t *lex,
 				goto cleanup;
 			}
 
-			CHECK(dns_time32_fromtext(DST_AS_STR(token), &when));
+			CHECK(dns_time32_fromregion(token.value.as_textregion,
+						    &when));
 
 			dst_key_settime(key, tag, when);
 
@@ -592,8 +593,8 @@ dst__privstruct_writefile(const dst_key_t *key, const dst_private_t *priv,
 			  const char *directory) {
 	FILE *fp;
 	isc_result_t result;
-	char filename[NAME_MAX];
-	char tmpname[NAME_MAX];
+	char filename[NAME_MAX + 1];
+	char tmpname[NAME_MAX + 1];
 	char buffer[MAXFIELDSIZE * 2];
 	isc_stdtime_t when;
 	uint32_t value;

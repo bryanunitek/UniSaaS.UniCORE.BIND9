@@ -188,7 +188,7 @@ dns_nsec3_typepresent(dns_rdata_t *rdata, dns_rdatatype_t type) {
 	REQUIRE(rdata->type == dns_rdatatype_nsec3);
 
 	/* This should never fail */
-	result = dns_rdata_tostruct(rdata, &nsec3, NULL);
+	result = dns_rdata_tostruct(rdata, &nsec3);
 	INSIST(result == ISC_R_SUCCESS);
 
 	present = false;
@@ -211,7 +211,6 @@ dns_nsec3_typepresent(dns_rdata_t *rdata, dns_rdatatype_t type) {
 		}
 		break;
 	}
-	dns_rdata_freestruct(&nsec3);
 	return present;
 }
 
@@ -232,11 +231,8 @@ dns_nsec3_hashname(dns_fixedname_t *result,
 		   unsigned int iterations, const unsigned char *salt,
 		   size_t saltlength) {
 	unsigned char hash[NSEC3_MAX_HASH_LENGTH];
-	unsigned char nametext[DNS_NAME_FORMATSIZE];
 	dns_fixedname_t fixed;
 	dns_name_t *downcased;
-	isc_buffer_t namebuffer;
-	isc_region_t region;
 	size_t len;
 
 	if (rethash == NULL) {
@@ -258,16 +254,8 @@ dns_nsec3_hashname(dns_fixedname_t *result,
 
 	SET_IF_NOT_NULL(hash_length, len);
 
-	/* convert the hash to base32hex non-padded */
-	region.base = rethash;
-	region.length = (unsigned int)len;
-	isc_buffer_init(&namebuffer, nametext, sizeof nametext);
-	isc_base32hexnp_totext(&region, 1, "", &namebuffer);
-
-	/* convert the hex to a domain name */
-	dns_fixedname_init(result);
-	return dns_name_fromtext(dns_fixedname_name(result), &namebuffer,
-				 origin, 0);
+	return dns_fixedname_fromnsec3hash(
+		result, (const dns_nsec3hash_t *)rethash, origin);
 }
 
 unsigned int
@@ -286,47 +274,6 @@ dns_nsec3_supportedhash(dns_hash_t hash) {
 		return true;
 	}
 	return false;
-}
-
-/*%
- * Update a single RR in version 'ver' of 'db' and log the
- * update in 'diff'.
- *
- * Ensures:
- * \li  '*tuple' == NULL.  Either the tuple is freed, or its
- *      ownership has been transferred to the diff.
- */
-static isc_result_t
-do_one_tuple(dns_difftuple_t **tuple, dns_db_t *db, dns_dbversion_t *ver,
-	     dns_diff_t *diff) {
-	dns_diff_t temp_diff;
-	isc_result_t result;
-
-	/*
-	 * Create a singleton diff.
-	 */
-	dns_diff_init(diff->mctx, &temp_diff);
-	ISC_LIST_APPEND(temp_diff.tuples, *tuple, link);
-
-	/*
-	 * Apply it to the database.
-	 */
-	result = dns_diff_apply(&temp_diff, db, ver);
-	ISC_LIST_UNLINK(temp_diff.tuples, *tuple, link);
-	if (result != ISC_R_SUCCESS) {
-		dns_difftuple_free(tuple);
-		return result;
-	}
-
-	/*
-	 * Merge it into the current pending journal entry.
-	 */
-	dns_diff_appendminimal(diff, tuple);
-
-	/*
-	 * Do not clear temp_diff.
-	 */
-	return ISC_R_SUCCESS;
 }
 
 /*%
@@ -420,7 +367,7 @@ delnsec3(dns_db_t *db, dns_dbversion_t *version, const dns_name_t *name,
 	DNS_RDATASET_FOREACH(&rdataset) {
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(&rdataset, &rdata);
-		CHECK(dns_rdata_tostruct(&rdata, &nsec3, NULL));
+		CHECK(dns_rdata_tostruct(&rdata, &nsec3));
 
 		if (!match_nsec3param(&nsec3, nsec3param)) {
 			continue;
@@ -428,7 +375,7 @@ delnsec3(dns_db_t *db, dns_dbversion_t *version, const dns_name_t *name,
 
 		dns_difftuple_create(diff->mctx, DNS_DIFFOP_DEL, name,
 				     rdataset.ttl, &rdata, &tuple);
-		CHECK(do_one_tuple(&tuple, db, version, diff));
+		CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 	}
 
 	result = ISC_R_SUCCESS;
@@ -492,7 +439,7 @@ find_nsec3(dns_rdata_nsec3_t *nsec3, dns_rdataset_t *rdataset,
 	DNS_RDATASET_FOREACH(rdataset) {
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(rdataset, &rdata);
-		dns_rdata_tostruct(&rdata, nsec3, NULL);
+		dns_rdata_tostruct(&rdata, nsec3);
 
 		if (match_nsec3param(nsec3, nsec3param)) {
 			return ISC_R_SUCCESS;
@@ -702,7 +649,7 @@ find_previous:
 					   &buffer));
 		dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, prev,
 				     rdataset.ttl, &rdata, &tuple);
-		CHECK(do_one_tuple(&tuple, db, version, diff));
+		CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 		INSIST(old_length <= sizeof(nexthash));
 		memmove(nexthash, old_next, old_length);
 		if (!CREATE(nsec3param->flags)) {
@@ -736,7 +683,7 @@ addnsec3:
 	 */
 	dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, hashname, nsecttl,
 			     &rdata, &tuple);
-	CHECK(do_one_tuple(&tuple, db, version, diff));
+	CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 	INSIST(tuple == NULL);
 	dns_rdata_reset(&rdata);
 	dns_db_detachnode(&newnode);
@@ -834,7 +781,7 @@ addnsec3:
 						   &buffer));
 			dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, prev,
 					     rdataset.ttl, &rdata, &tuple);
-			CHECK(do_one_tuple(&tuple, db, version, diff));
+			CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 			INSIST(old_length <= sizeof(nexthash));
 			memmove(nexthash, old_next, old_length);
 			if (!CREATE(nsec3param->flags)) {
@@ -863,7 +810,7 @@ addnsec3:
 		 */
 		dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, hashname,
 				     nsecttl, &rdata, &tuple);
-		CHECK(do_one_tuple(&tuple, db, version, diff));
+		CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 		INSIST(tuple == NULL);
 		dns_rdata_reset(&rdata);
 		dns_db_detachnode(&newnode);
@@ -924,7 +871,7 @@ dns_nsec3_addnsec3s(dns_db_t *db, dns_dbversion_t *version,
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 
 		dns_rdataset_current(&rdataset, &rdata);
-		CHECK(dns_rdata_tostruct(&rdata, &nsec3param, NULL));
+		CHECK(dns_rdata_tostruct(&rdata, &nsec3param));
 
 		if (nsec3param.flags != 0) {
 			continue;
@@ -965,8 +912,8 @@ dns_nsec3param_fromprivate(dns_rdata_t *src, dns_rdata_t *target,
 	isc_buffer_setactive(&buf1, src->length - 1);
 	isc_buffer_init(&buf2, buf, (unsigned int)buflen);
 	result = dns_rdata_fromwire(target, src->rdclass,
-				    dns_rdatatype_nsec3param, &buf1,
-				    DNS_DECOMPRESS_NEVER, &buf2);
+				    dns_rdatatype_nsec3param, &buf1, NULL,
+				    &buf2);
 
 	return result == ISC_R_SUCCESS;
 }
@@ -1103,7 +1050,7 @@ dns_nsec3param_deletechains(dns_db_t *db, dns_dbversion_t *ver,
 		if (!flag) {
 			dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, origin,
 					     0, &private, &tuple);
-			CHECK(do_one_tuple(&tuple, db, ver, diff));
+			CHECK(dns_diff_applytuple(&tuple, db, ver, diff));
 			INSIST(tuple == NULL);
 		}
 	}
@@ -1153,7 +1100,7 @@ try_private:
 
 		dns_difftuple_create(diff->mctx, DNS_DIFFOP_DEL, origin, 0,
 				     &rdata, &tuple);
-		CHECK(do_one_tuple(&tuple, db, ver, diff));
+		CHECK(dns_diff_applytuple(&tuple, db, ver, diff));
 		INSIST(tuple == NULL);
 
 		rdata.data = buf;
@@ -1167,7 +1114,7 @@ try_private:
 		if (!flag) {
 			dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, origin,
 					     0, &rdata, &tuple);
-			CHECK(do_one_tuple(&tuple, db, ver, diff));
+			CHECK(dns_diff_applytuple(&tuple, db, ver, diff));
 			INSIST(tuple == NULL);
 		}
 	}
@@ -1219,7 +1166,7 @@ dns_nsec3_addnsec3sx(dns_db_t *db, dns_dbversion_t *version,
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 
 		dns_rdataset_current(&rdataset, &rdata);
-		CHECK(dns_rdata_tostruct(&rdata, &nsec3param, NULL));
+		CHECK(dns_rdata_tostruct(&rdata, &nsec3param));
 
 		if (nsec3param.flags != 0) {
 			continue;
@@ -1254,7 +1201,7 @@ try_private:
 		{
 			continue;
 		}
-		CHECK(dns_rdata_tostruct(&rdata2, &nsec3param, NULL));
+		CHECK(dns_rdata_tostruct(&rdata2, &nsec3param));
 
 		if ((nsec3param.flags & DNS_NSEC3FLAG_REMOVE) != 0) {
 			continue;
@@ -1448,7 +1395,7 @@ dns_nsec3_delnsec3(dns_db_t *db, dns_dbversion_t *version,
 					   &buffer));
 		dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, prev,
 				     rdataset.ttl, &rdata, &tuple);
-		CHECK(do_one_tuple(&tuple, db, version, diff));
+		CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 		dns_rdata_reset(&rdata);
 		dns_rdataset_disassociate(&rdataset);
 		break;
@@ -1548,7 +1495,7 @@ cleanup_orphaned_ents:
 						   &buffer));
 			dns_difftuple_create(diff->mctx, DNS_DIFFOP_ADD, prev,
 					     rdataset.ttl, &rdata, &tuple);
-			CHECK(do_one_tuple(&tuple, db, version, diff));
+			CHECK(dns_diff_applytuple(&tuple, db, version, diff));
 			dns_rdata_reset(&rdata);
 			dns_rdataset_disassociate(&rdataset);
 			break;
@@ -1612,7 +1559,7 @@ dns_nsec3_delnsec3sx(dns_db_t *db, dns_dbversion_t *version,
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 
 		dns_rdataset_current(&rdataset, &rdata);
-		CHECK(dns_rdata_tostruct(&rdata, &nsec3param, NULL));
+		CHECK(dns_rdata_tostruct(&rdata, &nsec3param));
 
 		if (nsec3param.flags != 0) {
 			continue;
@@ -1651,7 +1598,7 @@ try_private:
 		{
 			continue;
 		}
-		CHECK(dns_rdata_tostruct(&rdata2, &nsec3param, NULL));
+		CHECK(dns_rdata_tostruct(&rdata2, &nsec3param));
 
 		if ((nsec3param.flags & DNS_NSEC3FLAG_REMOVE) != 0) {
 			continue;
@@ -1686,6 +1633,7 @@ dns_nsec3_active(dns_db_t *db, dns_dbversion_t *version, bool complete,
 isc_result_t
 dns_nsec3_activex(dns_db_t *db, dns_dbversion_t *version, bool complete,
 		  dns_rdatatype_t privatetype, bool *answer) {
+	bool found = false;
 	dns_dbnode_t *node = NULL;
 	dns_rdataset_t rdataset;
 	dns_rdata_nsec3param_t nsec3param;
@@ -1710,11 +1658,10 @@ dns_nsec3_activex(dns_db_t *db, dns_dbversion_t *version, bool complete,
 		return result;
 	}
 
-	bool found = false;
 	DNS_RDATASET_FOREACH(&rdataset) {
 		dns_rdata_t rdata = DNS_RDATA_INIT;
 		dns_rdataset_current(&rdataset, &rdata);
-		dns_rdata_tostruct(&rdata, &nsec3param, NULL);
+		dns_rdata_tostruct(&rdata, &nsec3param);
 
 		if (nsec3param.flags == 0) {
 			found = true;
@@ -1722,12 +1669,11 @@ dns_nsec3_activex(dns_db_t *db, dns_dbversion_t *version, bool complete,
 		}
 	}
 	dns_rdataset_disassociate(&rdataset);
-	*answer = found;
 
 try_private:
-	if (privatetype == 0 || complete) {
+	if (found || privatetype == 0 || complete) {
 		dns_db_detachnode(&node);
-		*answer = false;
+		*answer = found;
 		return ISC_R_SUCCESS;
 	}
 	result = dns_db_findrdataset(db, node, version, privatetype, 0, 0,
@@ -1755,7 +1701,7 @@ try_private:
 			continue;
 		}
 
-		dns_rdata_tostruct(&rdata2, &nsec3param, NULL);
+		dns_rdata_tostruct(&rdata2, &nsec3param);
 		if (!complete && CREATE(nsec3param.flags)) {
 			found = true;
 			break;
@@ -1816,7 +1762,7 @@ dns_nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 
 	dns_rdataset_current(nsec3set, &rdata);
 
-	RETERR(dns_rdata_tostruct(&rdata, &nsec3, NULL));
+	RETERR(dns_rdata_tostruct(&rdata, &nsec3));
 
 	(*logit)(arg, ISC_LOG_DEBUG(3), "looking for relevant NSEC3");
 

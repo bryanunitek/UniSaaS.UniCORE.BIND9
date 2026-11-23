@@ -29,6 +29,7 @@ libtest = shared_library(
     dependencies: [
         libdns_dep,
         libisc_dep,
+        libisccc_dep,
         libisccfg_dep,
         libns_dep,
     ],
@@ -48,6 +49,8 @@ libtest_qp_dep = declare_dependency(
     include_directories: test_inc,
 )
 
+subdir('hypothesis')
+
 if not cmocka_dep.found()
     subdir_done()
 endif
@@ -57,5 +60,6 @@ check_test_registration = [python, files('../util/check_test_registration.py')]
 subdir('bench')
 subdir('dns')
 subdir('isc')
+subdir('isccc')
 subdir('isccfg')
 subdir('ns')

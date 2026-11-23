@@ -46,14 +46,13 @@
 #include <dns/rdatatype.h>
 #include <dns/secalg.h>
 #include <dns/types.h>
-#include <dns/zone.h>
 #include <dns/zoneverify.h>
 
 #include <dst/dst.h>
 
 typedef struct vctx {
 	isc_mem_t *mctx;
-	dns_zone_t *zone;
+	const char *zonename;
 	dns_db_t *db;
 	dns_dbversion_t *ver;
 	dns_name_t *origin;
@@ -107,18 +106,21 @@ chain_length(struct nsec3_chain_fixed *chain) {
 
 /*%
  * Log a zone verification error described by 'fmt' and the variable arguments
- * following it.  Either use dns_zone_logv() or print to stderr, depending on
- * whether the function was invoked from within named or by a standalone tool,
- * respectively.
+ * following it.  Either use the supplied zone name or print to stderr,
+ * depending on whether the function was invoked from within named or by a
+ * standalone tool, respectively.
  */
 static void
 zoneverify_log_error(const vctx_t *vctx, const char *fmt, ...) {
 	va_list ap;
 
 	va_start(ap, fmt);
-	if (vctx->zone != NULL) {
-		dns_zone_logv(vctx->zone, DNS_LOGCATEGORY_GENERAL,
-			      ISC_LOG_ERROR, NULL, fmt, ap);
+	if (vctx->zonename != NULL) {
+		char message[4096];
+		vsnprintf(message, sizeof(message), fmt, ap);
+		isc_log_write(DNS_LOGCATEGORY_GENERAL, DNS_LOGMODULE_ZONE,
+			      ISC_LOG_ERROR, "zone %s: %s", vctx->zonename,
+			      message);
 	} else {
 		vfprintf(stderr, fmt, ap);
 		fprintf(stderr, "\n");
@@ -129,22 +131,31 @@ zoneverify_log_error(const vctx_t *vctx, const char *fmt, ...) {
 static bool
 is_delegation(const vctx_t *vctx, const dns_name_t *name, dns_dbnode_t *node,
 	      uint32_t *ttlp) {
-	dns_rdataset_t nsset;
+	dns_rdataset_t rdataset = DNS_RDATASET_INIT;
 	isc_result_t result;
 
 	if (dns_name_equal(name, vctx->origin)) {
 		return false;
 	}
 
-	dns_rdataset_init(&nsset);
 	result = dns_db_findrdataset(vctx->db, node, vctx->ver,
-				     dns_rdatatype_ns, 0, 0, &nsset, NULL);
-	if (dns_rdataset_isassociated(&nsset)) {
-		SET_IF_NOT_NULL(ttlp, nsset.ttl);
-		dns_rdataset_disassociate(&nsset);
+				     dns_rdatatype_ns, 0, 0, &rdataset, NULL);
+	if (result == ISC_R_SUCCESS && dns_rdataset_isassociated(&rdataset)) {
+		SET_IF_NOT_NULL(ttlp, rdataset.ttl);
+		dns_rdataset_disassociate(&rdataset);
+		return true;
 	}
 
-	return result == ISC_R_SUCCESS;
+	result = dns_db_findrdataset(vctx->db, node, vctx->ver,
+				     dns_rdatatype_deleg, 0, 0, &rdataset,
+				     NULL);
+	if (result == ISC_R_SUCCESS && dns_rdataset_isassociated(&rdataset)) {
+		SET_IF_NOT_NULL(ttlp, rdataset.ttl);
+		dns_rdataset_disassociate(&rdataset);
+		return true;
+	}
+
+	return false;
 }
 
 /*%
@@ -703,6 +714,11 @@ verifynsec3(const vctx_t *vctx, const dns_name_t *name,
 					     dns_rdatatype_nsec3, 0, 0,
 					     &rdataset, NULL);
 	}
+
+	/*
+	 * An OPT-OUT range may cover unsigned delegation points and
+	 * empty nodes, but any other node must have a matching NSEC3.
+	 */
 	if (result != ISC_R_SUCCESS &&
 	    (!delegation || !optout ||
 	     (!empty && dns_nsec_isset(types, dns_rdatatype_ds))))
@@ -787,7 +803,7 @@ verifyset(vctx_t *vctx, dns_rdataset_t *rdataset, const dns_name_t *name,
 	  dns_dbnode_t *node, dst_key_t **dstkeys, size_t nkeys) {
 	unsigned char set_algorithms[DST_MAX_ALGS] = { 0 };
 	char namebuf[DNS_NAME_FORMATSIZE];
-	char algbuf[DNS_SECALG_FORMATSIZE];
+	char algbuf[DST_ALG_FORMATSIZE];
 	char typebuf[DNS_RDATATYPE_FORMATSIZE];
 	dns_rdataset_t sigrdataset = DNS_RDATASET_INIT;
 	dns_rdatasetiter_t *rdsiter = NULL;
@@ -916,6 +932,7 @@ verifynode(vctx_t *vctx, const dns_name_t *name, dns_dbnode_t *node,
 		 */
 		if (rdataset.type != dns_rdatatype_rrsig &&
 		    (!delegation || rdataset.type == dns_rdatatype_ds ||
+		     rdataset.type == dns_rdatatype_deleg ||
 		     rdataset.type == dns_rdatatype_nsec))
 		{
 			result = verifyset(vctx, &rdataset, name, node, dstkeys,
@@ -1233,12 +1250,12 @@ verifyemptynodes(const vctx_t *vctx, const dns_name_t *name,
 }
 
 static void
-vctx_init(vctx_t *vctx, isc_mem_t *mctx, dns_zone_t *zone, dns_db_t *db,
+vctx_init(vctx_t *vctx, isc_mem_t *mctx, const char *zonename, dns_db_t *db,
 	  dns_dbversion_t *ver, dns_name_t *origin, dns_keytable_t *secroots) {
 	memset(vctx, 0, sizeof(*vctx));
 
 	vctx->mctx = mctx;
-	vctx->zone = zone;
+	vctx->zonename = zonename;
 	vctx->db = db;
 	vctx->ver = ver;
 	vctx->origin = origin;
@@ -1590,7 +1607,7 @@ static void
 determine_active_algorithms(vctx_t *vctx, bool ignore_kskflag,
 			    bool keyset_kskonly,
 			    void (*report)(const char *, ...)) {
-	char algbuf[DNS_SECALG_FORMATSIZE];
+	char algbuf[DST_ALG_FORMATSIZE];
 
 	report("Verifying the zone using the following algorithms:");
 
@@ -1718,11 +1735,11 @@ verify_nodes(vctx_t *vctx, isc_result_t *vresult) {
 			continue;
 		}
 		if (is_delegation(vctx, name, node, NULL)) {
-			zonecut = dns_fixedname_name(&fzonecut);
+			zonecut = dns_name(&fzonecut);
 			dns_name_copy(name, zonecut);
 			isdelegation = true;
 		} else if (has_dname(vctx, node)) {
-			zonecut = dns_fixedname_name(&fzonecut);
+			zonecut = dns_name(&fzonecut);
 			dns_name_copy(name, zonecut);
 		}
 		nextnode = NULL;
@@ -1798,7 +1815,7 @@ verify_nodes(vctx_t *vctx, isc_result_t *vresult) {
 				goto done;
 			}
 		} else {
-			prevname = dns_fixedname_name(&fprevname);
+			prevname = dns_name(&fprevname);
 		}
 		dns_name_copy(name, prevname);
 		if (*vresult == ISC_R_SUCCESS) {
@@ -1855,7 +1872,7 @@ done:
 
 static isc_result_t
 check_bad_algorithms(const vctx_t *vctx, void (*report)(const char *, ...)) {
-	char algbuf[DNS_SECALG_FORMATSIZE];
+	char algbuf[DST_ALG_FORMATSIZE];
 	bool first = true;
 
 	for (size_t i = 0; i < ARRAY_SIZE(vctx->bad_algorithms); i++) {
@@ -1881,7 +1898,7 @@ check_bad_algorithms(const vctx_t *vctx, void (*report)(const char *, ...)) {
 static void
 print_summary(const vctx_t *vctx, bool keyset_kskonly,
 	      void (*report)(const char *, ...)) {
-	char algbuf[DNS_SECALG_FORMATSIZE];
+	char algbuf[DST_ALG_FORMATSIZE];
 
 	report("Zone fully signed:");
 	for (size_t i = 0; i < ARRAY_SIZE(vctx->ksk_algorithms); i++) {
@@ -1908,7 +1925,7 @@ print_summary(const vctx_t *vctx, bool keyset_kskonly,
 }
 
 isc_result_t
-dns_zoneverify_dnssec(dns_zone_t *zone, dns_db_t *db, dns_dbversion_t *ver,
+dns_zoneverify_dnssec(const char *zonename, dns_db_t *db, dns_dbversion_t *ver,
 		      dns_name_t *origin, dns_keytable_t *secroots,
 		      isc_mem_t *mctx, bool ignore_kskflag, bool keyset_kskonly,
 		      void (*report)(const char *, ...)) {
@@ -1916,7 +1933,7 @@ dns_zoneverify_dnssec(dns_zone_t *zone, dns_db_t *db, dns_dbversion_t *ver,
 	isc_result_t result, vresult = ISC_R_UNSET;
 	vctx_t vctx;
 
-	vctx_init(&vctx, mctx, zone, db, ver, origin, secroots);
+	vctx_init(&vctx, mctx, zonename, db, ver, origin, secroots);
 
 	result = check_apex_rrsets(&vctx);
 	if (result != ISC_R_SUCCESS) {

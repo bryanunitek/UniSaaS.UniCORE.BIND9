@@ -35,11 +35,14 @@
 #include <isc/refcount.h>
 #include <isc/types.h>
 
+#include <isccfg/clause.h>
+
 /***
  *** Types
  ***/
 
 typedef struct cfg_aclconfctx cfg_aclconfctx_t;
+typedef struct cfg_token      cfg_token_t;
 
 /*%
  * A configuration parser.
@@ -136,8 +139,8 @@ cfg_parser_currentfile(cfg_parser_t *pctx);
  */
 
 isc_result_t
-cfg_map_add(cfg_obj_t *map, const cfg_obj_t *obj,
-	    const cfg_clausedef_t *clause);
+cfg_map_addclone(cfg_obj_t *map, const cfg_obj_t *obj,
+		 const cfg_clausedef_t *clause);
 /*%<
  * Clone 'obj' and add its clone to the specified clause in mapbody 'mapobj'.
  * If the clause is tagged with CFG_CLAUSEFLAG_MULTI, the function expects
@@ -204,14 +207,15 @@ cfg_obj_ispercentage(const cfg_obj_t *obj);
  */
 
 isc_result_t
-cfg_map_get(const cfg_obj_t *mapobj, const char *name, const cfg_obj_t **obj);
+cfg_map_get(const cfg_obj_t *mapobj, enum cfg_clause name,
+	    const cfg_obj_t **obj);
 /*%<
  * Extract an element from a configuration object, which
  * must be of a map type.
  *
  * Requires:
  * \li     'mapobj' points to a valid configuration object of a map type.
- * \li     'name' points to a null-terminated string.
+ * \li     'name' is a valid enum cfg_clause value.
  * \li	'obj' is non-NULL and '*obj' is NULL.
  *
  * Returns:
@@ -357,6 +361,22 @@ cfg_obj_asstring(const cfg_obj_t *obj);
  *
  * Returns:
  * \li     A pointer to a null terminated string.
+ */
+
+bool
+cfg_obj_istokens(const cfg_obj_t *obj);
+/*%<
+ * Return true iff 'obj' is a bracketed token list.
+ */
+
+const cfg_token_t *
+cfg_obj_astokens(const cfg_obj_t *obj);
+/*%<
+ * Returns the value of a bracketed token list as a CFG_TOKEN_EOF-terminated
+ * array of tokens, encoded as described in <isccfg/tokens.h>.
+ *
+ * Requires:
+ * \li     'obj' points to a valid bracketed token list object.
  */
 
 bool
@@ -567,11 +587,14 @@ cfg_map_nextclause(const cfg_type_t *map, const void **clauses,
 		   unsigned int *idx);
 
 const cfg_clausedef_t *
-cfg_map_findclause(const cfg_type_t *map, const char *name);
+cfg_map_findclause(const cfg_type_t *map, enum cfg_clause name);
 
-typedef isc_result_t(pluginlist_cb_t)(
-	const cfg_obj_t *config, const cfg_obj_t *obj, cfg_aclconfctx_t *aclctx,
-	const char *plugin_path, const char *parameters, void *callback_data);
+typedef isc_result_t(pluginlist_cb_t)(const cfg_obj_t	*config,
+				      const cfg_obj_t	*obj,
+				      cfg_aclconfctx_t	*aclctx,
+				      const char	*plugin_path,
+				      const cfg_token_t *parameters,
+				      void		*callback_data);
 /*%<
  * Function prototype for the callback used with cfg_pluginlist_foreach().
  * Called once for each element of the list passed to cfg_pluginlist_foreach().
@@ -581,7 +604,8 @@ typedef isc_result_t(pluginlist_cb_t)(
  * \li 'config' - the 'config' object passed to cfg_pluginlist_foreach()
  * \li 'obj' - object representing the specific "plugin" stanza to be processed
  * \li 'plugin_path' - path to the shared object with plugin code
- * \li 'parameters' - configuration text for the plugin
+ * \li 'parameters' - configuration tokens for the plugin (see
+ *     <isccfg/tokens.h>), or NULL if none were given
  * \li 'callback_data' - the pointer passed to cfg_pluginlist_foreach()
  */
 

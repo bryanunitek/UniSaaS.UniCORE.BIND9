@@ -179,6 +179,7 @@ struct ns_client {
 						      */
 				bool wantdnssec : 1; /*%< include dnssec records
 						      */
+				bool wantdeleg : 1;  /*%< DELEG ok */
 				bool wantnsid : 1; /*%< include nameserver ID */
 				bool badcookie : 1; /*%< bad/out-of-date cookie
 						     */
@@ -465,7 +466,7 @@ ns_client_dumprecursing(FILE *f, ns_clientmgr_t *manager);
  */
 
 void
-ns_client_qnamereplace(ns_client_t *client, dns_name_t *name);
+ns_client_qnamereplace(ns_client_t *client, dns_linkedname_t *name);
 /*%<
  * Replace the qname.
  */
@@ -514,7 +515,7 @@ ns_client_newnamebuf(ns_client_t *client);
  * Allocate a name buffer for the client message.
  */
 
-dns_name_t *
+dns_linkedname_t *
 ns_client_newname(ns_client_t *client, isc_buffer_t *dbuf, isc_buffer_t *nbuf);
 /*%<
  * Get a temporary name for the client message.
@@ -527,14 +528,15 @@ ns_client_getnamebuf(ns_client_t *client);
  */
 
 void
-ns_client_keepname(ns_client_t *client, dns_name_t *name, isc_buffer_t *dbuf);
+ns_client_keepname(ns_client_t *client, dns_linkedname_t *name,
+		   isc_buffer_t *dbuf);
 /*%<
  * Adjust buffer 'dbuf' to reflect that 'name' is using space in it,
  * and set client attributes appropriately.
  */
 
 void
-ns_client_releasename(ns_client_t *client, dns_name_t **namep);
+ns_client_releasename(ns_client_t *client, dns_linkedname_t **namep);
 /*%<
  * Release 'name' back to the pool of temporary names for the client
  * message. If it is using a name buffer, relinquish its exclusive

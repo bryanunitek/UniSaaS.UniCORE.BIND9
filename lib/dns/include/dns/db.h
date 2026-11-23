@@ -291,6 +291,7 @@ enum {
 	 * stale-refresh-time window.
 	 */
 	DNS_DBFIND_STALESTART = 1 << 12,
+	DNS_DBFIND_DELEGOK = 1 << 13,
 };
 /*@}*/
 
@@ -767,11 +768,12 @@ dns__db_closeversion(dns_db_t *db, dns_dbversion_t **versionp,
  *** Node Methods
  ***/
 
-#define dns_db_findnode(db, name, create, nodep) \
-	dns__db_findnode(db, name, create, NULL, NULL, nodep DNS__DB_FILELINE)
-#define dns_db_findnodeext(db, name, create, methods, clientinfo, nodep) \
-	dns__db_findnode(db, name, create, methods, clientinfo,          \
+#define dns_db_findnode(db, name, create, nodep)                         \
+	dns__db_findnode(db, DNS_NAME__RO_ARG(name), create, NULL, NULL, \
 			 nodep DNS__DB_FILELINE)
+#define dns_db_findnodeext(db, name, create, methods, clientinfo, nodep) \
+	dns__db_findnode(db, DNS_NAME__RO_ARG(name), create, methods,    \
+			 clientinfo, nodep DNS__DB_FILELINE)
 isc_result_t
 dns__db_findnode(dns_db_t *db, const dns_name_t *name, bool create,
 		 dns_clientinfomethods_t *methods, dns_clientinfo_t *clientinfo,
@@ -814,14 +816,15 @@ dns__db_findnode(dns_db_t *db, const dns_name_t *name, bool create,
  *	implementation used.
  */
 
-#define dns_db_find(db, name, version, type, options, now, foundname,        \
-		    rdataset, sigrdataset)                                   \
-	dns__db_find(db, name, version, type, options, now, foundname, NULL, \
-		     NULL, rdataset, sigrdataset DNS__DB_FILELINE)
-#define dns_db_findext(db, name, version, type, options, now, foundname, \
-		       methods, clientinfo, rdataset, sigrdataset)       \
-	dns__db_find(db, name, version, type, options, now, foundname,   \
-		     methods, clientinfo, rdataset,                      \
+#define dns_db_find(db, name, version, type, options, now, foundname,         \
+		    rdataset, sigrdataset)                                    \
+	dns__db_find(db, DNS_NAME__RO_ARG(name), version, type, options, now, \
+		     foundname, NULL, NULL, rdataset,                         \
+		     sigrdataset DNS__DB_FILELINE)
+#define dns_db_findext(db, name, version, type, options, now, foundname,      \
+		       methods, clientinfo, rdataset, sigrdataset)            \
+	dns__db_find(db, DNS_NAME__RO_ARG(name), version, type, options, now, \
+		     foundname, methods, clientinfo, rdataset,                \
 		     sigrdataset DNS__DB_FILELINE)
 isc_result_t
 dns__db_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
@@ -853,6 +856,11 @@ dns__db_find(dns_db_t *db, const dns_name_t *name, dns_dbversion_t *version,
  * \li	If 'options' does not have #DNS_DBFIND_PENDINGOK set, then no
  *	pending data will be returned.  This option is only meaningful for
  *	cache databases.
+ *
+ * \li	If 'options' does not have #DNS_DBFIND_DELEGOK set, then only
+ * 	NS referrals will be returned. This allows different delegation
+ * 	answers to be sent depending on whether a client has set the
+ * 	DE (DELEG-OK) bit.
  *
  * \li	If the #DNS_DBFIND_NOWILD option is set, then wildcard matching will
  *	be disabled.  This option is only meaningful for zone databases.
@@ -1545,8 +1553,9 @@ dns_db_getsize(dns_db_t *db, dns_dbversion_t *version, uint64_t *records,
  * \li	#ISC_R_NOTIMPLEMENTED
  */
 
-#define dns_db_findnsec3node(db, name, create, nodep) \
-	dns__db_findnsec3node(db, name, create, nodep DNS__DB_FILELINE)
+#define dns_db_findnsec3node(db, name, create, nodep)             \
+	dns__db_findnsec3node(db, DNS_NAME__RO_ARG(name), create, \
+			      nodep DNS__DB_FILELINE)
 isc_result_t
 dns__db_findnsec3node(dns_db_t *db, const dns_name_t *name, bool create,
 		      dns_dbnode_t **nodep DNS__DB_FLARG);

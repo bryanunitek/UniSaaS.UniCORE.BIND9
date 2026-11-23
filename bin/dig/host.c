@@ -24,6 +24,7 @@
 #include <isc/lib.h>
 #include <isc/loop.h>
 #include <isc/netaddr.h>
+#include <isc/parseint.h>
 #include <isc/string.h>
 #include <isc/util.h>
 
@@ -223,7 +224,7 @@ printsection(dns_message_t *msg, dns_section_t sectionid,
 	MSG_SECTION_FOREACH(msg, sectionid, name) {
 		isc_buffer_init(&target, tbuf, sizeof(tbuf));
 		first = true;
-		print_name = name;
+		print_name = dns_name(name);
 
 		ISC_LIST_FOREACH(name->list, rdataset, link) {
 			if (query->lookup->rdtype == dns_rdatatype_axfr &&
@@ -675,9 +676,8 @@ parse_args(bool is_batchfile, int argc, char **argv) {
 			    NULL)
 			{
 				rdtype = dns_rdatatype_ixfr;
-				/* XXXMPA add error checking */
-				serial = strtoul(ixfrserial, NULL, 10);
-				result = ISC_R_SUCCESS;
+				result = isc_parse_uint32(&serial, ixfrserial,
+							  10);
 			} else {
 				tr.base = isc_commandline_argument;
 				tr.length = strlen(isc_commandline_argument);

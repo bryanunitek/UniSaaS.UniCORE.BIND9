@@ -127,18 +127,20 @@ dns_nsec3_buildrdata(dns_db_t *db, dns_dbversion_t *version, dns_dbnode_t *node,
 			 * Work out if we need to set the RRSIG bit for
 			 * this node.  We set the RRSIG bit if either of
 			 * the following conditions are met:
-			 * 1) We have a SOA or DS then we need to set
-			 *    the RRSIG bit as both always will be signed.
-			 * 2) We set the RRSIG bit if we don't have
-			 *    a NS record but do have other data.
+			 * 1) We have an SOA, DS or DELEG; these will
+			 *    always be signed.
+			 * 2) We don't have an NS, but do have other data.
 			 */
-			if (rdataset.type == dns_rdatatype_soa ||
-			    rdataset.type == dns_rdatatype_ds)
-			{
+			switch (rdataset.type) {
+			case dns_rdatatype_soa:
+			case dns_rdatatype_ds:
+			case dns_rdatatype_deleg:
 				need_rrsig = true;
-			} else if (rdataset.type == dns_rdatatype_ns) {
+				break;
+			case dns_rdatatype_ns:
 				found_ns = true;
-			} else {
+				break;
+			default:
 				found = true;
 			}
 		}
@@ -156,8 +158,9 @@ dns_nsec3_buildrdata(dns_db_t *db, dns_dbversion_t *version, dns_dbnode_t *node,
 	/*
 	 * At zone cuts, deny the existence of glue in the parent zone.
 	 */
-	if (dns_nsec_isset(bm, dns_rdatatype_ns) &&
-	    !dns_nsec_isset(bm, dns_rdatatype_soa))
+	if (dns_nsec_isset(bm, dns_rdatatype_deleg) ||
+	    (dns_nsec_isset(bm, dns_rdatatype_ns) &&
+	     !dns_nsec_isset(bm, dns_rdatatype_soa)))
 	{
 		for (i = 0; i <= max_type; i++) {
 			if (dns_nsec_isset(bm, i) &&
@@ -1244,8 +1247,8 @@ deleteit(dns_db_t *db, dns_dbversion_t *ver, const dns_name_t *name,
 
 	result = dns_db_find(db, name, ver, dns_rdatatype_any,
 			     DNS_DBFIND_GLUEOK | DNS_DBFIND_NOWILD,
-			     (isc_stdtime_t)0, dns_fixedname_name(&foundname),
-			     NULL, NULL);
+			     (isc_stdtime_t)0, dns_name(&foundname), NULL,
+			     NULL);
 	if (result == DNS_R_EMPTYNAME || result == ISC_R_SUCCESS ||
 	    result == DNS_R_ZONECUT)
 	{
@@ -1719,12 +1722,12 @@ dns_nsec3_maxiterations(void) {
 }
 
 isc_result_t
-dns_nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
-			const dns_name_t *nsec3name, dns_rdataset_t *nsec3set,
-			dns_name_t *zonename, bool *exists, bool *data,
-			bool *optout, bool *unknown, bool *setnearest,
-			dns_name_t *closest, dns_name_t *nearest,
-			dns_nseclog_t logit, void *arg) {
+dns__nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
+			 const dns_name_t *nsec3name, dns_rdataset_t *nsec3set,
+			 dns_name_t *zonename, bool *exists, bool *data,
+			 bool *optout, bool *unknown, bool *setnearest,
+			 dns_name_t *closest, dns_name_t *nearest,
+			 dns_nseclog_t logit, void *arg) {
 	char namebuf[DNS_NAME_FORMATSIZE];
 	dns_fixedname_t fzone;
 	dns_fixedname_t qfixed;
@@ -1934,6 +1937,8 @@ dns_nsec3_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
 			    (dns_name_empty(closest) ||
 			     dns_name_issubdomain(qname, closest)) &&
 			    !dns_nsec3_typepresent(&rdata, dns_rdatatype_ds) &&
+			    !dns_nsec3_typepresent(&rdata,
+						   dns_rdatatype_deleg) &&
 			    !dns_nsec3_typepresent(&rdata,
 						   dns_rdatatype_dname) &&
 			    (dns_nsec3_typepresent(&rdata, dns_rdatatype_soa) ||

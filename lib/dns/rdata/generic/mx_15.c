@@ -149,26 +149,6 @@ fromwire_mx(ARGS_FROMWIRE) {
 	return dns_name_fromwire(&name, source, dctx, target);
 }
 
-static isc_result_t
-towire_mx(ARGS_TOWIRE) {
-	dns_name_t name;
-	isc_region_t region;
-
-	REQUIRE(rdata->type == dns_rdatatype_mx);
-	REQUIRE(rdata->length != 0);
-
-	dns_compress_setpermitted(cctx, true);
-
-	dns_rdata_toregion(rdata, &region);
-	RETERR(mem_tobuffer(target, region.base, 2));
-	isc_region_consume(&region, 2);
-
-	dns_name_init(&name);
-	dns_name_fromregion(&name, &region);
-
-	return dns_name_towire(&name, cctx, target);
-}
-
 static int
 compare_mx(ARGS_COMPARE) {
 	dns_name_t name1;
@@ -269,13 +249,12 @@ additionaldata_mx(ARGS_ADDLDATA) {
 	RETERR((add)(arg, &name, dns_rdatatype_a, NULL DNS__DB_FILELINE));
 
 	dns_fixedname_init(&fixed);
-	result = dns_name_concatenate(&port25, &name,
-				      dns_fixedname_name(&fixed));
+	result = dns_name_concatenate(&port25, &name, dns_name(&fixed));
 	if (result != ISC_R_SUCCESS) {
 		return ISC_R_SUCCESS;
 	}
 
-	return (add)(arg, dns_fixedname_name(&fixed), dns_rdatatype_tlsa,
+	return (add)(arg, dns_name(&fixed), dns_rdatatype_tlsa,
 		     NULL DNS__DB_FILELINE);
 }
 

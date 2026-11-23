@@ -38,6 +38,7 @@
 
 #include <isc/assertions.h>
 #include <isc/hmac.h>
+#include <isc/parseint.h>
 #include <isc/result.h>
 #include <isc/safe.h>
 #include <isc/symtab.h>
@@ -49,8 +50,7 @@
 #include <isccc/symtype.h>
 #include <isccc/util.h>
 
-#define MAX_TAGS     256
-#define DUP_LIFETIME 900
+#define MAX_TAGS 256
 #ifndef ISCCC_MAXDEPTH
 #define ISCCC_MAXDEPTH \
 	10 /* Big enough for rndc which just sends a string each way. */
@@ -881,14 +881,15 @@ isccc_cc_lookupstring(isccc_sexpr_t *alist, const char *key, char **strp) {
 isc_result_t
 isccc_cc_lookupuint32(isccc_sexpr_t *alist, const char *key, uint32_t *uintp) {
 	isccc_sexpr_t *kv, *v;
+	uint32_t value;
 
 	kv = isccc_alist_assq(alist, key);
 	if (kv != NULL) {
 		v = ISCCC_SEXPR_CDR(kv);
 		if (isccc_sexpr_binaryp(v)) {
-			SET_IF_NOT_NULL(uintp, (uint32_t)strtoul(
-						       isccc_sexpr_tostring(v),
-						       NULL, 10));
+			RETERR(isc_parse_uint32(&value, isccc_sexpr_tostring(v),
+						10));
+			SET_IF_NOT_NULL(uintp, value);
 			return ISC_R_SUCCESS;
 		} else {
 			return ISC_R_EXISTS;
@@ -909,20 +910,15 @@ symtab_undefine(char *key, unsigned int type, isc_symvalue_t value, void *arg) {
 
 static bool
 symtab_clean(char *key, unsigned int type, isc_symvalue_t value, void *arg) {
-	isccc_time_t *now;
+	isccc_time_t *now = arg;
 
 	UNUSED(key);
 	UNUSED(type);
 
-	now = arg;
-
-	if (*now < value.as_uinteger) {
-		return false;
+	if (value.as_uinteger <= *now) {
+		return true;
 	}
-	if ((*now - value.as_uinteger) < DUP_LIFETIME) {
-		return false;
-	}
-	return true;
+	return false;
 }
 
 void
@@ -952,7 +948,7 @@ has_whitespace(const char *str) {
 
 isc_result_t
 isccc_cc_checkdup(isc_symtab_t *symtab, isccc_sexpr_t *message,
-		  isccc_time_t now) {
+		  isccc_time_t expire) {
 	const char *_frm;
 	const char *_to;
 	char *_ser = NULL, *_tim = NULL, *tmp;
@@ -1005,7 +1001,7 @@ isccc_cc_checkdup(isc_symtab_t *symtab, isccc_sexpr_t *message,
 		return ISC_R_NOMEMORY;
 	}
 	snprintf(key, len, "%s;%s;%s;%s", _frm, _to, _ser, _tim);
-	value.as_uinteger = now;
+	value.as_uinteger = expire;
 	result = isc_symtab_define(symtab, key, ISCCC_SYMTYPE_CCDUP, value,
 				   isc_symexists_reject);
 	if (result != ISC_R_SUCCESS) {

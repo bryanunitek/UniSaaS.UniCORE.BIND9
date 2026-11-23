@@ -192,6 +192,8 @@ echo_i "checking named-checkconf deprecate warnings ($n)"
 ret=0
 $CHECKCONF deprecated.conf >checkconf.out$n.1 2>&1 || ret=1
 grep "option 'max-zone-ttl' is deprecated" <checkconf.out$n.1 >/dev/null || ret=1
+grep "option 'nxdomain-redirect' is deprecated" <checkconf.out$n.1 >/dev/null || ret=1
+grep "type 'redirect' is deprecated" <checkconf.out$n.1 >/dev/null || ret=1
 if [ $ret -ne 0 ]; then echo_i "failed"; fi
 status=$((status + ret))
 # set -i to ignore deprecate warnings
@@ -588,7 +590,7 @@ status=$((status + ret))
 # By 23:59 11 October 2026 the IANA root zone should be being signed with the
 # 2026 trust anchor.  Prior to that check that we are warning that we are
 # missing the 2017 trust anchor.
-if test $(date +%s) -lt 1791676800; then
+if test $(date +%s) -lt 1791763140; then
   n=$((n + 1))
   echo_i "check that the 2026 ICANN ROOT KSK alone generates a warning ($n)"
   ret=0
@@ -730,10 +732,11 @@ if [ $ret -ne 0 ]; then echo_i "failed"; fi
 status=$((status + ret))
 
 n=$((n + 1))
-echo_i "checking named-checkconf kasp deprecated algorithms and digests ($n)"
+echo_i "checking named-checkconf kasp deprecated algorithms, digests, and salt ($n)"
 ret=0
 if [ $RSASHA1_SUPPORTED = 0 ]; then
   $CHECKCONF kasp-deprecated-fips.conf >checkconf.out$n 2>&1 || ret=1
+  grep "dnssec-policy: deprecated NSEC3 salt-length > 0" <checkconf.out$n >/dev/null || ret=1
 else
   $CHECKCONF kasp-deprecated.conf >checkconf.out$n 2>&1 || ret=1
   grep "dnssec-policy: DNSSEC algorithm rsasha1 is deprecated" checkconf.out$n >/dev/null || ret=1

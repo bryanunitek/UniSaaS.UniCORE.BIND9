@@ -57,6 +57,8 @@
 #include <dns/secalg.h>
 #include <dns/time.h>
 
+#include <isccfg/clause.h>
+
 #include "dnssectool.h"
 
 #define KEYSTATES_NVALUES 4
@@ -122,13 +124,13 @@ version(const char *name) {
 void
 sig_format(dns_rdata_rrsig_t *sig, char *cp, unsigned int size) {
 	char namestr[DNS_NAME_FORMATSIZE];
-	char algstr[DNS_NAME_FORMATSIZE];
+	char algstr[DST_ALG_FORMATSIZE];
 	dst_algorithm_t algorithm = dst_algorithm_fromdata(
 		sig->algorithm, sig->signature, sig->siglen);
 
 	dns_name_format(&sig->signer, namestr, sizeof(namestr));
 	dst_algorithm_format(algorithm, algstr, sizeof(algstr));
-	snprintf(cp, size, "%s/%s/%d", namestr, algstr, sig->keyid);
+	snprintf(cp, size, "%s/%s/%hu", namestr, algstr, sig->keyid);
 }
 
 void
@@ -474,13 +476,13 @@ key_collision(dst_key_t *dstkey, dns_name_t *name, const char *dir,
 
 	if (min != max) {
 		if (id < min || id > max) {
-			fprintf(stderr, "Key ID %d outside of [%u..%u]\n", id,
+			fprintf(stderr, "Key ID %hu outside of [%u..%u]\n", id,
 				min, max);
 			return true;
 		}
 		if (rid < min || rid > max) {
 			fprintf(stderr,
-				"Revoked Key ID %d (for tag %d) outside of "
+				"Revoked Key ID %u (for tag %hu) outside of "
 				"[%u..%u]\n",
 				rid, id, min, max);
 			return true;
@@ -515,14 +517,14 @@ again:
 			if (id != oldid) {
 				if (verbose > 1) {
 					fprintf(stderr,
-						"Key ID %d could "
-						"collide with %d\n",
+						"Key ID %hu could "
+						"collide with %hu\n",
 						id, oldid);
 				}
 			} else {
 				SET_IF_NOT_NULL(exact, true);
 				if (verbose > 1) {
-					fprintf(stderr, "Key ID %d exists\n",
+					fprintf(stderr, "Key ID %hu exists\n",
 						id);
 				}
 			}
@@ -627,7 +629,7 @@ kasp_from_conf(cfg_obj_t *config, isc_mem_t *mctx, const char *name,
 		      isc_result_totext(result));
 	}
 
-	(void)cfg_map_get(config, "key-store", &keystores);
+	(void)cfg_map_get(config, CFG_CLAUSE_KEY_STORE, &keystores);
 	CFG_LIST_FOREACH(keystores, element) {
 		cfg_obj_t *kconfig = cfg_listelt_value(element);
 		result = cfg_keystore_fromconfig(kconfig, mctx, &kslist, NULL);
@@ -645,7 +647,7 @@ kasp_from_conf(cfg_obj_t *config, isc_mem_t *mctx, const char *name,
 	}
 	dns_keystore_detach(&keystore);
 
-	(void)cfg_map_get(config, "dnssec-policy", &kasps);
+	(void)cfg_map_get(config, CFG_CLAUSE_DNSSEC_POLICY, &kasps);
 	CFG_LIST_FOREACH(kasps, element) {
 		dns_kasp_t *kasp = NULL;
 

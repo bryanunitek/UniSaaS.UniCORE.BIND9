@@ -107,6 +107,7 @@
 		{ DNS_KEYALG_ECDSA384, "ECDSA384", 0 },         \
 		{ DNS_KEYALG_ED25519, "ED25519", 0 },           \
 		{ DNS_KEYALG_ED448, "ED448", 0 },               \
+		{ DNS_KEYALG_MLDSA44, "MLDSA44", 0 },           \
 		{ DNS_KEYALG_INDIRECT, "INDIRECT", 0 },         \
 		{ DNS_KEYALG_PRIVATEDNS, "PRIVATEDNS", 0 },     \
 		{ DNS_KEYALG_PRIVATEOID, "PRIVATEOID", 0 }, SENTINEL
@@ -176,8 +177,6 @@ static struct tbl secprotos[] = { SECPROTONAMES };
 static struct tbl hashalgs[] = { HASHALGNAMES };
 static struct tbl dsdigests[] = { DSDIGESTNAMES };
 static struct tbl dsyncschemes[] = { DSYNCSCHEMES };
-static struct tbl privatednss[] = { PRIVATEDNSS SENTINEL };
-static struct tbl privateoids[] = { PRIVATEOIDS SENTINEL };
 static struct tbl dstalgorithms[] = { PRIVATEDNSS PRIVATEOIDS SECALGNAMES };
 
 static struct keyflag {
@@ -199,6 +198,8 @@ static struct keyflag {
 		 { "FLAG9", 0x0040, 0x0040 },
 		 { "FLAG10", 0x0020, 0x0020 },
 		 { "FLAG11", 0x0010, 0x0010 },
+		 { "FLAG12", 0x0008, 0x0008 },
+		 { "FLAG13", 0x0004, 0x0004 },
 		 { "SIG0", 0x0000, 0x000F },
 		 { "SIG1", 0x0001, 0x000F },
 		 { "SIG2", 0x0002, 0x000F },
@@ -215,6 +216,7 @@ static struct keyflag {
 		 { "SIG13", 0x000D, 0x000F },
 		 { "SIG14", 0x000E, 0x000F },
 		 { "SIG15", 0x000F, 0x000F },
+		 { "ADT", DNS_KEYFLAG_ADT, DNS_KEYFLAG_ADT },
 		 { "KSK", DNS_KEYFLAG_KSK, DNS_KEYFLAG_KSK },
 		 { NULL, 0, 0 } };
 
@@ -377,64 +379,6 @@ dns_secalg_format(dns_secalg_t alg, char *cp, unsigned int size) {
 	cp[isc_buffer_usedlength(&b)] = 0;
 	if (result != ISC_R_SUCCESS) {
 		cp[0] = 0;
-	}
-}
-
-isc_result_t
-dst_privatedns_fromtext(dst_algorithm_t *dstalgp, isc_textregion_t *source) {
-	unsigned int value;
-	RETERR(dns_mnemonic_fromtext(&value, source, privatednss, 0));
-	*dstalgp = value;
-	return ISC_R_SUCCESS;
-}
-
-isc_result_t
-dns_privatedns_totext(dst_algorithm_t alg, isc_buffer_t *target) {
-	return dns_mnemonic_totext(alg, target, privatednss);
-}
-
-void
-dns_privatedns_format(dst_algorithm_t alg, char *cp, unsigned int size) {
-	isc_buffer_t b;
-	isc_region_t r;
-	isc_result_t result;
-
-	REQUIRE(cp != NULL && size > 0);
-	isc_buffer_init(&b, cp, size - 1);
-	result = dns_privatedns_totext(alg, &b);
-	isc_buffer_usedregion(&b, &r);
-	cp[r.length] = 0;
-	if (result != ISC_R_SUCCESS) {
-		r.base[0] = 0;
-	}
-}
-
-isc_result_t
-dst_privateoid_fromtext(dst_algorithm_t *dstalgp, isc_textregion_t *source) {
-	unsigned int value;
-	RETERR(dns_mnemonic_fromtext(&value, source, privateoids, 0));
-	*dstalgp = value;
-	return ISC_R_SUCCESS;
-}
-
-isc_result_t
-dns_privateoid_totext(dst_algorithm_t alg, isc_buffer_t *target) {
-	return dns_mnemonic_totext(alg, target, privateoids);
-}
-
-void
-dns_privateoid_format(dst_algorithm_t alg, char *cp, unsigned int size) {
-	isc_buffer_t b;
-	isc_region_t r;
-	isc_result_t result;
-
-	REQUIRE(cp != NULL && size > 0);
-	isc_buffer_init(&b, cp, size - 1);
-	result = dns_privateoid_totext(alg, &b);
-	isc_buffer_usedregion(&b, &r);
-	cp[r.length] = 0;
-	if (result != ISC_R_SUCCESS) {
-		r.base[0] = 0;
 	}
 }
 

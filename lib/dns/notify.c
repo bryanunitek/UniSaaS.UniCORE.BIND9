@@ -26,6 +26,7 @@
 #include <dns/stats.h>
 #include <dns/tsig.h>
 #include <dns/zone.h>
+#include <dns/zonemgr.h>
 #include <dns/zoneproperties.h>
 
 #include "zone_p.h"
@@ -48,8 +49,6 @@ dns_notifyctx_init(dns_notifyctx_t *nctx, dns_rdatatype_t type) {
 		.notifydelay = 5,
 		.notifies = ISC_LIST_INITIALIZER,
 	};
-	isc_sockaddr_any(&ctx.notifysrc4);
-	isc_sockaddr_any6(&ctx.notifysrc6);
 
 	*nctx = ctx;
 }
@@ -198,7 +197,7 @@ notify_createmessage(dns_notify_t *notify, dns_message_t **messagep) {
 	dns_rdataset_t rdataset;
 	dns_rdata_t rdata = DNS_RDATA_INIT;
 
-	dns_name_t *tempname = NULL;
+	dns_linkedname_t *tempname = NULL;
 	dns_rdata_t *temprdata = NULL;
 	dns_rdatalist_t *temprdatalist = NULL;
 	dns_rdataset_t *temprdataset = NULL;
@@ -224,7 +223,7 @@ notify_createmessage(dns_notify_t *notify, dns_message_t **messagep) {
 	/*
 	 * Make question.
 	 */
-	dns_name_clone(dns_zone_getorigin(notify->zone), tempname);
+	dns_name_clone(dns_zone_getorigin(notify->zone), dns_name(tempname));
 	dns_rdataset_makequestion(temprdataset, dns_zone_getclass(notify->zone),
 				  notify->type);
 	ISC_LIST_APPEND(tempname->list, temprdataset, link);
@@ -245,7 +244,7 @@ notify_createmessage(dns_notify_t *notify, dns_message_t **messagep) {
 	INSIST(result == ISC_R_SUCCESS);
 	INSIST(zonedb != NULL); /* XXXJT: is this assumption correct? */
 
-	dns_name_clone(dns_zone_getorigin(notify->zone), tempname);
+	dns_name_clone(dns_zone_getorigin(notify->zone), dns_name(tempname));
 	dns_db_currentversion(zonedb, &version);
 	result = dns_db_findnode(zonedb, tempname, false, &node);
 	if (result != ISC_R_SUCCESS) {
@@ -341,7 +340,7 @@ notify_send_toaddr(void *arg) {
 	dns__zone_lock(notify->zone);
 
 	notifyctx = dns__zone_getnotifyctx(notify->zone, notify->type);
-	zmgr = dns_zone_getmgr(notify->zone);
+	zmgr = dns_g_zonemgr;
 	view = dns_zone_getview(notify->zone);
 	loop = dns_zone_getloop(notify->zone);
 	result = dns_zone_getdb(notify->zone, &zonedb);
@@ -378,9 +377,7 @@ notify_send_toaddr(void *arg) {
 	CHECK(notify_createmessage(notify, &message));
 
 	if (notify->key != NULL) {
-		/* Transfer ownership of key */
-		key = notify->key;
-		notify->key = NULL;
+		dns_tsigkey_attach(notify->key, &key);
 	} else {
 		result = dns_view_getpeertsig(view, &dstip, &key);
 		if (result != ISC_R_SUCCESS && result != ISC_R_NOTFOUND) {
@@ -427,7 +424,8 @@ notify_send_toaddr(void *arg) {
 
 			src = notify->src;
 			if (isc_sockaddr_equal(&src, &any)) {
-				src = notifyctx->notifysrc4;
+				src = zone_addr4_tosockaddr(
+					&notifyctx->notifysrc4);
 			}
 		}
 		break;
@@ -438,7 +436,8 @@ notify_send_toaddr(void *arg) {
 
 			src = notify->src;
 			if (isc_sockaddr_equal(&src, &any)) {
-				src = notifyctx->notifysrc6;
+				src = zone_addr6_tosockaddr(
+					&notifyctx->notifysrc6);
 			}
 		}
 		break;
@@ -526,7 +525,7 @@ notify_queue(dns_notify_t *notify, bool startup, bool dequeue) {
 	REQUIRE(DNS_NOTIFY_VALID(notify));
 
 	isc_loop_t *loop = dns_zone_getloop(notify->zone);
-	dns_zonemgr_t *zmgr = dns_zone_getmgr(notify->zone);
+	dns_zonemgr_t *zmgr = dns_g_zonemgr;
 	isc_ratelimiter_t *notifyrl = NULL;
 	isc_ratelimiter_t *startupnotifyrl = NULL;
 
@@ -624,11 +623,11 @@ notify_isself(dns_notify_t *notify, isc_sockaddr_t *dst) {
 
 	switch (isc_sockaddr_pf(dst)) {
 	case PF_INET:
-		src = notifyctx->notifysrc4;
+		src = zone_addr4_tosockaddr(&notifyctx->notifysrc4);
 		isc_sockaddr_any(&any);
 		break;
 	case PF_INET6:
-		src = notifyctx->notifysrc6;
+		src = zone_addr6_tosockaddr(&notifyctx->notifysrc6);
 		isc_sockaddr_any6(&any);
 		break;
 	default:

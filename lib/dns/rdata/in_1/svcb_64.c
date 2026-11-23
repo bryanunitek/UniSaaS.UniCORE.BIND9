@@ -58,7 +58,7 @@ static isc_result_t
 alpn_fromtxt(isc_textregion_t *source, isc_buffer_t *target) {
 	isc_textregion_t source0 = *source;
 	do {
-		RETERR(commatxt_fromtext(&source0, true, target));
+		RETERR(commatxt_fromtext(&source0, true, false, target));
 	} while (source0.length != 0);
 	return ISC_R_SUCCESS;
 }
@@ -242,10 +242,9 @@ svc_fromtext(isc_textregion_t *region, isc_buffer_t *target) {
 	isc_buffer_t sb;
 	isc_region_t keyregion;
 	size_t len;
-	uint16_t key;
+	uint16_t key, port;
 	unsigned int i;
 	unsigned int used;
-	unsigned long ul;
 
 	for (i = 0; i < ARRAY_SIZE(sbpr); i++) {
 		len = strlen(sbpr[i].name);
@@ -284,14 +283,8 @@ svc_fromtext(isc_textregion_t *region, isc_buffer_t *target) {
 			{
 				return DNS_R_SYNTAX;
 			}
-			ul = strtoul(region->base, &e, 10);
-			if (*e != '\0') {
-				return DNS_R_SYNTAX;
-			}
-			if (ul > 0xffff) {
-				return ISC_R_RANGE;
-			}
-			RETERR(uint16_tobuffer(ul, target));
+			RETERR(isc_parse_uint16(&port, region->base, 10));
+			RETERR(uint16_tobuffer(port, target));
 			break;
 		case sbpr_ipv4s:
 			/* Reject embedded NUL bytes. */
@@ -722,7 +715,7 @@ generic_totext_in_svcb(ARGS_TOTEXT) {
 		switch (encoding) {
 		case sbpr_text:
 		case sbpr_dohpath:
-			RETERR(multitxt_totext(&r, target));
+			RETERR(multitxt_totext(&r, true, target));
 			break;
 		case sbpr_port:
 			num = uint16_fromregion(&r);
@@ -941,44 +934,6 @@ fromwire_in_svcb(ARGS_FROMWIRE) {
 	REQUIRE(rdclass == dns_rdataclass_in);
 
 	return generic_fromwire_in_svcb(CALL_FROMWIRE);
-}
-
-static isc_result_t
-generic_towire_in_svcb(ARGS_TOWIRE) {
-	dns_name_t name;
-	isc_region_t region;
-
-	REQUIRE(rdata->length != 0);
-
-	dns_compress_setpermitted(cctx, false);
-
-	/*
-	 * SvcPriority.
-	 */
-	dns_rdata_toregion(rdata, &region);
-	RETERR(mem_tobuffer(target, region.base, 2));
-	isc_region_consume(&region, 2);
-
-	/*
-	 * TargetName.
-	 */
-	dns_name_init(&name);
-	dns_name_fromregion(&name, &region);
-	RETERR(dns_name_towire(&name, cctx, target));
-	isc_region_consume(&region, name_length(&name));
-
-	/*
-	 * SvcParams.
-	 */
-	return mem_tobuffer(target, region.base, region.length);
-}
-
-static isc_result_t
-towire_in_svcb(ARGS_TOWIRE) {
-	REQUIRE(rdata->type == dns_rdatatype_svcb);
-	REQUIRE(rdata->length != 0);
-
-	return generic_towire_in_svcb(CALL_TOWIRE);
 }
 
 static int

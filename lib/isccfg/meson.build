@@ -13,9 +13,11 @@ isccfg_srcset.add(
     files(
         'aclconf.c',
         'check.c',
+        'clause.c',
         'duration.c',
         'kaspconf.c',
         'namedconf.c',
         'parser.c',
+        'tokens.c',
     ),
 )

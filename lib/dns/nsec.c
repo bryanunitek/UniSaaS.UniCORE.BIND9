@@ -143,8 +143,9 @@ dns_nsec_buildrdata(dns_db_t *db, dns_dbversion_t *version, dns_dbnode_t *node,
 	/*
 	 * At zone cuts, deny the existence of glue in the parent zone.
 	 */
-	if (dns_nsec_isset(bm, dns_rdatatype_ns) &&
-	    !dns_nsec_isset(bm, dns_rdatatype_soa))
+	if (dns_nsec_isset(bm, dns_rdatatype_deleg) ||
+	    (dns_nsec_isset(bm, dns_rdatatype_ns) &&
+	     !dns_nsec_isset(bm, dns_rdatatype_soa)))
 	{
 		for (i = 0; i <= max_type; i++) {
 			if (dns_nsec_isset(bm, i) &&
@@ -308,10 +309,10 @@ dns_nsec_nseconly(dns_db_t *db, dns_dbversion_t *version, dns_diff_t *diff,
  * Return ISC_R_IGNORE when the NSEC is not the appropriate one.
  */
 isc_result_t
-dns_nsec_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
-		       const dns_name_t *nsecname, dns_rdataset_t *nsecset,
-		       bool *exists, bool *data, dns_name_t *wild,
-		       dns_nseclog_t logit, void *arg) {
+dns__nsec_noexistnodata(dns_rdatatype_t type, const dns_name_t *name,
+			const dns_name_t *nsecname, dns_rdataset_t *nsecset,
+			bool *exists, bool *data, dns_name_t *wild,
+			dns_nseclog_t logit, void *arg) {
 	int order;
 	dns_rdata_t rdata = DNS_RDATA_INIT;
 	isc_result_t result;

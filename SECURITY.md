@@ -17,6 +17,8 @@ relevant [ISC Knowledgebase article][1].
 
 ## Reporting possible security issues
 
+Please see [BIND 9 threat model](doc/arm/threat-model.inc.rst) first.
+
 If you think you may be seeing a potential security vulnerability in BIND (for
 example, a crash with a REQUIRE, INSIST, or ASSERT failure), please report it
 immediately by [opening a confidential GitLab issue][2].
@@ -38,5 +40,5 @@ think you have found a bug in any ISC software, we encourage you to
 in our Release Notes.
 
 [1]: https://kb.isc.org/docs/aa-00861
-[2]: https://gitlab.isc.org/isc-projects/bind9/-/issues/new?issue[confidential]=true&issuable_template=Security_issue
+[2]: https://gitlab.isc.org/isc-projects/bind9/-/work_items/new?description_template=Security_issue
 [3]: https://kb.isc.org/docs/aa-00340

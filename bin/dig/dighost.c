@@ -77,6 +77,7 @@
 
 #include <dst/dst.h>
 
+#include <isccfg/clause.h>
 #include <isccfg/namedconf.h>
 
 #include <irs/resconf.h>
@@ -760,6 +761,7 @@ clone_lookup(dig_lookup_t *lookold, bool servers) {
 	looknew->adflag = lookold->adflag;
 	looknew->cdflag = lookold->cdflag;
 	looknew->coflag = lookold->coflag;
+	looknew->deflag = lookold->deflag;
 	looknew->raflag = lookold->raflag;
 	looknew->tcflag = lookold->tcflag;
 	looknew->print_unknown_format = lookold->print_unknown_format;
@@ -797,8 +799,7 @@ clone_lookup(dig_lookup_t *lookold, bool servers) {
 			sizeof(*looknew->ecs_addr));
 	}
 
-	dns_name_copy(dns_fixedname_name(&lookold->fdomain),
-		      dns_fixedname_name(&looknew->fdomain));
+	dns_name_copy(&lookold->fdomain, dns_name(&looknew->fdomain));
 
 	if (servers) {
 		if (lookold->tls_ctx_cache != NULL) {
@@ -1094,10 +1095,10 @@ read_confkey(void) {
 
 	CHECK(cfg_parse_file(keyfile, &cfg_type_sessionkey, 0, &file));
 
-	CHECK(cfg_map_get(file, "key", &keyobj));
+	CHECK(cfg_map_get(file, CFG_CLAUSE_KEY, &keyobj));
 
-	(void)cfg_map_get(keyobj, "secret", &secretobj);
-	(void)cfg_map_get(keyobj, "algorithm", &algorithmobj);
+	(void)cfg_map_get(keyobj, CFG_CLAUSE_SECRET, &secretobj);
+	(void)cfg_map_get(keyobj, CFG_CLAUSE_ALGORITHM, &algorithmobj);
 	if (secretobj == NULL || algorithmobj == NULL) {
 		fatal("key must have algorithm and secret");
 	}
@@ -1442,8 +1443,8 @@ save_opt(dig_lookup_t *lookup, char *code, char *value) {
  * type, and class.
  */
 static void
-add_question(dns_message_t *message, dns_name_t *name, dns_rdataclass_t rdclass,
-	     dns_rdatatype_t rdtype) {
+add_question(dns_message_t *message, dns_linkedname_t *name,
+	     dns_rdataclass_t rdclass, dns_rdatatype_t rdtype) {
 	dns_rdataset_t *rdataset;
 
 	debug("add_question()");
@@ -1816,7 +1817,7 @@ followup_lookup(dns_message_t *msg, dig_query_t *query, dns_section_t section) {
 			unsigned int nlabels;
 			int order;
 
-			domain = dns_fixedname_name(&query->lookup->fdomain);
+			domain = dns_name(&query->lookup->fdomain);
 			namereln = dns_name_fullcompare(name, domain, &order,
 							&nlabels);
 			if (namereln == dns_namereln_equal) {
@@ -1873,7 +1874,7 @@ followup_lookup(dns_message_t *msg, dig_query_t *query, dns_section_t section) {
 				if (lookup->ns_search_only) {
 					lookup->recurse = false;
 				}
-				domain = dns_fixedname_name(&lookup->fdomain);
+				domain = dns_name(&lookup->fdomain);
 				dns_name_copy(name, domain);
 				lookup->edns = lookup->original_edns;
 			}
@@ -2006,7 +2007,7 @@ insert_soa(dig_lookup_t *lookup) {
 	dns_rdata_t *rdata = NULL;
 	dns_rdatalist_t *rdatalist = NULL;
 	dns_rdataset_t *rdataset = NULL;
-	dns_name_t *soaname = NULL;
+	dns_linkedname_t *soaname = NULL;
 
 	debug("insert_soa()");
 	soa.serial = lookup->ixfr_serial;
@@ -2042,7 +2043,7 @@ insert_soa(dig_lookup_t *lookup) {
 	dns_rdatalist_tordataset(rdatalist, rdataset);
 
 	dns_message_gettempname(lookup->sendmsg, &soaname);
-	dns_name_clone(lookup->name, soaname);
+	dns_name_clone(lookup->name, dns_name(soaname));
 	ISC_LIST_INIT(soaname->list);
 	ISC_LIST_APPEND(soaname->list, rdataset, link);
 	dns_message_addname(lookup->sendmsg, soaname, DNS_SECTION_AUTHORITY);
@@ -2171,8 +2172,10 @@ setup_lookup(dig_lookup_t *lookup) {
 	}
 
 	if (lookup->origin != NULL) {
+		dns_linkedname_t *oname = NULL;
+
 		debug("trying origin %s", lookup->origin->origin);
-		dns_message_gettempname(lookup->sendmsg, &lookup->oname);
+		dns_message_gettempname(lookup->sendmsg, &oname);
 		/* XXX Helper funct to conv char* to name? */
 		origin = lookup->origin->origin;
 #ifdef HAVE_LIBIDN2
@@ -2185,16 +2188,16 @@ setup_lookup(dig_lookup_t *lookup) {
 		len = (unsigned int)strlen(origin);
 		isc_buffer_init(&b, origin, len);
 		isc_buffer_add(&b, len);
-		result = dns_name_fromtext(lookup->oname, &b, dns_rootname, 0);
+		result = dns_name_fromtext(dns_name(oname), &b, dns_rootname,
+					   0);
 		if (result != ISC_R_SUCCESS) {
 			dns_message_puttempname(lookup->sendmsg, &lookup->name);
-			dns_message_puttempname(lookup->sendmsg,
-						&lookup->oname);
+			dns_message_puttempname(lookup->sendmsg, &oname);
 			fatal("'%s' is not in legal name syntax (%s)", origin,
 			      isc_result_totext(result));
 		}
 		if (lookup->trace && lookup->trace_root) {
-			dns_name_clone(dns_rootname, lookup->name);
+			dns_name_clone(dns_rootname, dns_name(lookup->name));
 		} else {
 			dns_fixedname_t fixed;
 			dns_name_t *name;
@@ -2207,17 +2210,18 @@ setup_lookup(dig_lookup_t *lookup) {
 			if (result == ISC_R_SUCCESS) {
 				if (!dns_name_isabsolute(name)) {
 					result = dns_name_concatenate(
-						name, lookup->oname,
-						lookup->name);
+						name, dns_name(oname),
+						dns_name(lookup->name));
 				} else {
-					dns_name_copy(name, lookup->name);
+					dns_name_copy(name,
+						      dns_name(lookup->name));
 				}
 			}
 			if (result != ISC_R_SUCCESS) {
 				dns_message_puttempname(lookup->sendmsg,
 							&lookup->name);
 				dns_message_puttempname(lookup->sendmsg,
-							&lookup->oname);
+							&oname);
 				if (result == DNS_R_NAMETOOLONG) {
 					return false;
 				}
@@ -2226,16 +2230,16 @@ setup_lookup(dig_lookup_t *lookup) {
 				      isc_result_totext(result));
 			}
 		}
-		dns_message_puttempname(lookup->sendmsg, &lookup->oname);
+		dns_message_puttempname(lookup->sendmsg, &oname);
 	} else {
 		debug("using root origin");
 		if (lookup->trace && lookup->trace_root) {
-			dns_name_clone(dns_rootname, lookup->name);
+			dns_name_clone(dns_rootname, dns_name(lookup->name));
 		} else {
 			len = (unsigned int)strlen(textname);
 			isc_buffer_init(&b, textname, len);
 			isc_buffer_add(&b, len);
-			result = dns_name_fromtext(lookup->name, &b,
+			result = dns_name_fromtext(dns_name(lookup->name), &b,
 						   dns_rootname, 0);
 			if (result != ISC_R_SUCCESS) {
 				dns_message_puttempname(lookup->sendmsg,
@@ -2378,12 +2382,16 @@ setup_lookup(dig_lookup_t *lookup) {
 
 		/* Set the EDNS flags */
 		unsigned int flags = lookup->ednsflags;
-		flags &= ~(DNS_MESSAGEEXTFLAG_DO | DNS_MESSAGEEXTFLAG_CO);
+		flags &= ~(DNS_MESSAGEEXTFLAG_DO | DNS_MESSAGEEXTFLAG_CO |
+			   DNS_MESSAGEEXTFLAG_DE);
 		if (lookup->dnssec) {
 			flags |= DNS_MESSAGEEXTFLAG_DO;
 		}
 		if (lookup->coflag) {
 			flags |= DNS_MESSAGEEXTFLAG_CO;
+		}
+		if (lookup->deflag) {
+			flags |= DNS_MESSAGEEXTFLAG_DE;
 		}
 
 		/* Set the EDNS UDP size */
@@ -2744,7 +2752,6 @@ get_create_tls_context(dig_query_t *query, const bool is_https,
 					: AF_INET;
 	isc_tlsctx_cache_transport_t transport =
 		is_https ? isc_tlsctx_cache_https : isc_tlsctx_cache_tls;
-	const bool hostname_ignore_subject = !is_https;
 	isc_tlsctx_client_session_cache_t *sess_cache = NULL,
 					  *found_sess_cache = NULL;
 
@@ -2772,15 +2779,8 @@ get_create_tls_context(dig_query_t *query, const bool is_https,
 
 		if (store != NULL) {
 			const char *hostname = get_tls_sni_hostname(query);
-			/*
-			 * According to RFC 8310, Subject field MUST NOT be
-			 * inspected when verifying hostname for DoT. Only
-			 * SubjectAltName must be checked. That is NOT the case
-			 * for HTTPS.
-			 */
 			CHECK(isc_tlsctx_enable_peer_verification(
-				ctx, false, store, hostname,
-				hostname_ignore_subject));
+				ctx, false, store, hostname));
 		}
 
 		if (query->lookup->tls_key_file_set &&

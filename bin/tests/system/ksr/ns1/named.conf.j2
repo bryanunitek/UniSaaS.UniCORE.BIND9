@@ -16,10 +16,26 @@ dnssec-policy "common" {
 	};
 };
 
+dnssec-policy "adt" {
+	offline-ksk yes;
+	keys {
+		ksk lifetime unlimited algorithm @DEFAULT_ALGORITHM@;
+		zsk lifetime P6M algorithm @DEFAULT_ALGORITHM@ flags adt;
+	};
+};
+
 dnssec-policy "csk" {
 	offline-ksk no;
 	keys {
 		csk lifetime P6M algorithm @DEFAULT_ALGORITHM@;
+	};
+};
+
+dnssec-policy "privateoid" {
+	offline-ksk yes;
+	keys {
+		ksk lifetime unlimited algorithm RSASHA256OID 2048;
+		zsk lifetime P6M algorithm RSASHA256OID 2048;
 	};
 };
 
@@ -85,6 +101,14 @@ dnssec-policy "fast" {
 	retire-safety 1;
 	parent-ds-ttl 5;
 	parent-propagation-delay 5;
+};
+
+dnssec-policy "collision" {
+	offline-ksk yes;
+	keys {
+		ksk lifetime unlimited algorithm ecdsap256sha256;
+		zsk lifetime unlimited algorithm ecdsap256sha256;
+	};
 };
 
 dnssec-policy "invalid-skr" {

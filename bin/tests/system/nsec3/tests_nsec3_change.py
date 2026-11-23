@@ -10,7 +10,6 @@
 # information regarding copyright ownership.
 
 import shutil
-import time
 
 import dns.name
 import dns.rdataclass
@@ -18,6 +17,7 @@ import dns.rdatatype
 import pytest
 
 from isctest.algorithms import Algorithm
+from isctest.util import newer_mtime
 from nsec3.common import (
     NSEC3_MARK,
     NSEC3_SALTLEN,
@@ -64,8 +64,8 @@ def after_servers_start(ns3, templates):
     isctest.kasp.wait_keymgr_done(ns3, zone)
     wait_for_nsec3param(ns3, zone, NSEC3_SALTLEN[zone].initial)
 
-    time.sleep(1)
-    shutil.copyfile(f"{nsdir}/template2.db.in", f"{nsdir}/{zone}.db")
+    with newer_mtime(f"{nsdir}/{zone}.db"):
+        shutil.copyfile(f"{nsdir}/template2.db.in", f"{nsdir}/{zone}.db")
     ns3.rndc(f"reload {zone}")
 
     isctest.run.retry_with_timeout(check_soa_update, timeout=10)
@@ -96,7 +96,7 @@ def test_nsec3_case(ns3):
             "salt-length": 8,
         },
         "key-properties": [
-            f"csk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden",
+            f"csk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden sep",
         ],
     }
     zone = params["zone"]

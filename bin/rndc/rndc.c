@@ -29,6 +29,7 @@
 #include <isc/mem.h>
 #include <isc/net.h>
 #include <isc/netmgr.h>
+#include <isc/parseint.h>
 #include <isc/random.h>
 #include <isc/refcount.h>
 #include <isc/result.h>
@@ -48,6 +49,7 @@
 #include <isccc/types.h>
 #include <isccc/util.h>
 
+#include <isccfg/clause.h>
 #include <isccfg/namedconf.h>
 
 #include "util.h"
@@ -298,6 +300,29 @@ rndc_senddone(isc_nmhandle_t *handle ISC_ATTR_UNUSED, isc_result_t result,
 }
 
 static void
+validate_response(isccc_sexpr_t *response) {
+	isccc_sexpr_t *_ctrl = NULL;
+	uint32_t rpl = 0, ser = ~serial;
+
+	_ctrl = isccc_alist_lookup(response, "_ctrl");
+	if (!isccc_alist_alistp(_ctrl)) {
+		fatal("bad or missing ctrl section in response");
+	}
+
+	if (isccc_cc_lookupuint32(_ctrl, "_rpl", &rpl) != ISC_R_SUCCESS ||
+	    rpl != 1)
+	{
+		fatal("bad or missing ctrl.rpl section in response");
+	}
+
+	if (isccc_cc_lookupuint32(_ctrl, "_ser", &ser) != ISC_R_SUCCESS ||
+	    ser != serial)
+	{
+		fatal("bad or missing ctrl.ser section in response");
+	}
+}
+
+static void
 rndc_recvdone(isc_nmhandle_t *handle, isc_result_t result, void *arg) {
 	isccc_ccmsg_t *ccmsg = (isccc_ccmsg_t *)arg;
 	isccc_sexpr_t *response = NULL;
@@ -332,6 +357,8 @@ rndc_recvdone(isc_nmhandle_t *handle, isc_result_t result, void *arg) {
 		fprintf(stderr, "\n");
 	}
 
+	validate_response(response);
+
 	data = isccc_alist_lookup(response, "_data");
 	if (!isccc_alist_alistp(data)) {
 		fatal("bad or missing data section in response");
@@ -361,7 +388,15 @@ rndc_recvdone(isc_nmhandle_t *handle, isc_result_t result, void *arg) {
 
 		result = isccc_cc_lookupuint32(data, "result", &eresult);
 		if (result == ISC_R_SUCCESS) {
-			printf("%s %u\n", isc_result_toid(eresult), eresult);
+			char *tmp = NULL;
+			const char *errid;
+			result = isccc_cc_lookupstring(data, "errid", &tmp);
+			if (result != ISC_R_SUCCESS) {
+				errid = "UNKNOWN";
+			} else {
+				errid = tmp;
+			}
+			printf("%s %u\n", errid, eresult);
 		} else {
 			printf("NONE -1\n");
 		}
@@ -407,10 +442,13 @@ rndc_recvnonce(isc_nmhandle_t *handle ISC_ATTR_UNUSED, isc_result_t result,
 	DO("parse message",
 	   isccc_cc_fromwire(&source, &response, algorithm, &secret));
 
+	validate_response(response);
+
 	_ctrl = isccc_alist_lookup(response, "_ctrl");
 	if (!isccc_alist_alistp(_ctrl)) {
 		fatal("bad or missing ctrl section in response");
 	}
+
 	nonce = 0;
 	if (isccc_cc_lookupuint32(_ctrl, "_nonce", &nonce) != ISC_R_SUCCESS) {
 		nonce = 0;
@@ -597,14 +635,15 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	}
 
 	if (!key_only) {
-		(void)cfg_map_get(config, "options", &options);
+		(void)cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 	}
 
 	if (key_only && servername == NULL) {
 		servername = "127.0.0.1";
 	} else if (servername == NULL && options != NULL) {
 		const cfg_obj_t *defserverobj = NULL;
-		(void)cfg_map_get(options, "default-server", &defserverobj);
+		(void)cfg_map_get(options, CFG_CLAUSE_DEFAULT_SERVER,
+				  &defserverobj);
 		if (defserverobj != NULL) {
 			servername = cfg_obj_asstring(defserverobj);
 		}
@@ -615,7 +654,7 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	}
 
 	if (!key_only) {
-		(void)cfg_map_get(config, "server", &servers);
+		(void)cfg_map_get(config, CFG_CLAUSE_SERVER, &servers);
 		if (servers != NULL) {
 			CFG_LIST_FOREACH(servers, elt) {
 				const char *name = NULL;
@@ -636,11 +675,12 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	if (keyname != NULL) {
 		/* Was set on command line, do nothing. */
 	} else if (server != NULL) {
-		DO("get key for server", cfg_map_get(server, "key", &defkey));
+		DO("get key for server",
+		   cfg_map_get(server, CFG_CLAUSE_KEY, &defkey));
 		keyname = cfg_obj_asstring(defkey);
 	} else if (options != NULL) {
 		DO("get default key",
-		   cfg_map_get(options, "default-key", &defkey));
+		   cfg_map_get(options, CFG_CLAUSE_DEFAULT_KEY, &defkey));
 		keyname = cfg_obj_asstring(defkey);
 	} else if (!key_only) {
 		fatal("no key for server and no default");
@@ -650,9 +690,10 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	 * Get the key's definition.
 	 */
 	if (key_only) {
-		DO("get key", cfg_map_get(config, "key", &key));
+		DO("get key", cfg_map_get(config, CFG_CLAUSE_KEY, &key));
 	} else {
-		DO("get config key list", cfg_map_get(config, "key", &keys));
+		DO("get config key list",
+		   cfg_map_get(config, CFG_CLAUSE_KEY, &keys));
 		bool match = false;
 		CFG_LIST_FOREACH(keys, elt) {
 			const char *name = NULL;
@@ -668,8 +709,8 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 			fatal("no key definition for name %s", keyname);
 		}
 	}
-	(void)cfg_map_get(key, "secret", &secretobj);
-	(void)cfg_map_get(key, "algorithm", &algorithmobj);
+	(void)cfg_map_get(key, CFG_CLAUSE_SECRET, &secretobj);
+	(void)cfg_map_get(key, CFG_CLAUSE_ALGORITHM, &algorithmobj);
 	if (secretobj == NULL || algorithmobj == NULL) {
 		fatal("key must have algorithm and secret");
 	}
@@ -706,10 +747,11 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 		/* Was set on command line, do nothing. */
 	} else {
 		if (server != NULL) {
-			(void)cfg_map_get(server, "port", &defport);
+			(void)cfg_map_get(server, CFG_CLAUSE_PORT, &defport);
 		}
 		if (defport == NULL && options != NULL) {
-			(void)cfg_map_get(options, "default-port", &defport);
+			(void)cfg_map_get(options, CFG_CLAUSE_DEFAULT_PORT,
+					  &defport);
 		}
 	}
 	if (defport != NULL) {
@@ -722,7 +764,7 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	}
 
 	if (server != NULL) {
-		result = cfg_map_get(server, "addresses", &addresses);
+		result = cfg_map_get(server, CFG_CLAUSE_ADDRESSES, &addresses);
 	} else {
 		result = ISC_R_NOTFOUND;
 	}
@@ -779,7 +821,7 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 
 	if (!local4set && server != NULL) {
 		address = NULL;
-		cfg_map_get(server, "source-address", &address);
+		cfg_map_get(server, CFG_CLAUSE_SOURCE_ADDRESS, &address);
 		if (address != NULL) {
 			local4 = *cfg_obj_assockaddr(address);
 			local4set = true;
@@ -787,7 +829,8 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	}
 	if (!local4set && options != NULL) {
 		address = NULL;
-		cfg_map_get(options, "default-source-address", &address);
+		cfg_map_get(options, CFG_CLAUSE_DEFAULT_SOURCE_ADDRESS,
+			    &address);
 		if (address != NULL) {
 			local4 = *cfg_obj_assockaddr(address);
 			local4set = true;
@@ -796,7 +839,7 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 
 	if (!local6set && server != NULL) {
 		address = NULL;
-		cfg_map_get(server, "source-address-v6", &address);
+		cfg_map_get(server, CFG_CLAUSE_SOURCE_ADDRESS_V6, &address);
 		if (address != NULL) {
 			local6 = *cfg_obj_assockaddr(address);
 			local6set = true;
@@ -804,7 +847,8 @@ parse_config(const char *keyname, cfg_obj_t **configp) {
 	}
 	if (!local6set && options != NULL) {
 		address = NULL;
-		cfg_map_get(options, "default-source-address-v6", &address);
+		cfg_map_get(options, CFG_CLAUSE_DEFAULT_SOURCE_ADDRESS_V6,
+			    &address);
 		if (address != NULL) {
 			local6 = *cfg_obj_assockaddr(address);
 			local6set = true;
@@ -818,6 +862,7 @@ int
 main(int argc, char **argv) {
 	bool show_final_mem = false;
 	isc_logconfig_t *logconfig = NULL;
+	isc_result_t result;
 	cfg_obj_t *config = NULL;
 	const char *keyname = NULL;
 	struct in_addr in;
@@ -909,8 +954,11 @@ main(int argc, char **argv) {
 			break;
 
 		case 't':
-			timeout = strtol(isc_commandline_argument, &p, 10);
-			if (*p != '\0' || timeout < 0 || timeout > 86400) {
+			result = isc_parse_signed_number(
+				&timeout, isc_commandline_argument, 10);
+			if (result != ISC_R_SUCCESS || timeout < 0 ||
+			    timeout > 86400)
+			{
 				fatal("invalid timeout '%s'",
 				      isc_commandline_argument);
 			}

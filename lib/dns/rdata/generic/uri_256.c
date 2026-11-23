@@ -94,7 +94,7 @@ totext_uri(ARGS_TOTEXT) {
 	/*
 	 * Target URI
 	 */
-	RETERR(multitxt_totext(&region, target));
+	RETERR(multitxt_totext(&region, true, target));
 	return ISC_R_SUCCESS;
 }
 
@@ -116,19 +116,6 @@ fromwire_uri(ARGS_FROMWIRE) {
 		return ISC_R_UNEXPECTEDEND;
 	}
 	isc_buffer_forward(source, region.length);
-	return mem_tobuffer(target, region.base, region.length);
-}
-
-static isc_result_t
-towire_uri(ARGS_TOWIRE) {
-	isc_region_t region;
-
-	REQUIRE(rdata->type == dns_rdatatype_uri);
-	REQUIRE(rdata->length != 0);
-
-	UNUSED(cctx);
-
-	dns_rdata_toregion(rdata, &region);
 	return mem_tobuffer(target, region.base, region.length);
 }
 

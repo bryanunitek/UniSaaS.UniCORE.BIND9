@@ -49,7 +49,7 @@ Options
    This option selects the cryptographic algorithm. For DNSSEC keys,
    the value of ``algorithm`` must be one of RSASHA1 (deprecated),
    NSEC3RSASHA1 (deprecated), RSASHA256, RSASHA512, ECDSAP256SHA256,
-   ECDSAP384SHA384, ED25519, or ED448.
+   ECDSAP384SHA384, ED25519, ED448, or MLDSA44.
 
    These values are case-insensitive. In some cases, abbreviations
    are supported, such as ECDSA256 for ECDSAP256SHA256 and ECDSA384
@@ -83,14 +83,21 @@ Options
 
 .. option:: -f flag
 
-   This option sets the specified flag in the flag field of the KEY/DNSKEY record.
-   The only recognized flags are ZSK (Zone-Signing Key), KSK (Key-Signing Key)
-   and REVOKE.
+   This option sets (or unsets) the specified flag in the flag field of the
+   KEY/DNSKEY record.  The only recognized flags are ZSK (Zone-Signing
+   Key), KSK (Key-Signing Key), ADT (Authoritative Delegation Types), and
+   REVOKE.
 
-   Note that ZSK is not a physical flag in the DNSKEY record, it is merely used
-   to explicitly tell that you want to create a ZSK. Setting :option:`-f` in
-   conjunction with :option:`-k` will result in generating keys that only
-   match the given role set with this option.
+   Flags are case-insensitive and can be abbreviated to a single letter.
+   Note that only one flag can be specified per ``-f`` option. For example,
+   ``-fa -fk`` sets ADT and KSK, but ``-fak`` only sets ADT and has no
+   effect on KSK.
+
+   ZSK is not a physical flag in the DNSKEY record, it is merely used
+   to explicitly state that you want to create a ZSK.
+
+   Setting :option:`-f` in conjunction with :option:`-k` will result in
+   generating keys that only match the given role set with this option.
 
 .. option:: -F
 
@@ -114,13 +121,13 @@ Options
 
 .. option:: -k policy
 
-   This option creates keys for a specific ``dnssec-policy``. If a policy uses multiple keys,
-   :program:`dnssec-keygen` generates multiple keys. This also
-   creates a ".state" file to keep track of the key state.
+   This option creates keys for a specific ``dnssec-policy``. If a policy
+   uses multiple keys, :program:`dnssec-keygen` generates multiple keys.
+   This also creates a ".state" file to keep track of the key state.
 
-   This option creates keys according to the ``dnssec-policy`` configuration, hence
-   it cannot be used at the same time as many of the other options that
-   :program:`dnssec-keygen` provides.
+   This option creates keys according to the ``dnssec-policy``
+   configuration, hence it cannot be used at the same time as many of the
+   other options that :program:`dnssec-keygen` provides.
 
 .. option:: -L ttl
 

@@ -11,6 +11,8 @@
 
 from collections.abc import AsyncGenerator, Collection
 
+import abc
+
 import dns.name
 import dns.rcode
 import dns.rdataclass
@@ -30,6 +32,7 @@ from isctest.asyncserver.matchers import Qname, Qtype
 TTL = 300
 
 RECONFIG_ZONE = "xfr-and-reconfig."
+RETRY_ZONE = "retry-too-big."
 OVERRUN_ZONE = "private-dns-overrun."
 
 # The malformed DNSKEY's algorithm identifier finishes on a 00 byte in the
@@ -72,7 +75,7 @@ class SerialCounter:
         self.serial = 0
 
 
-class SerialCounted(ResponseHandler):
+class SerialCounted(ResponseHandler, abc.ABC):
     def __init__(self, serials: SerialCounter) -> None:
         super().__init__()
         self._serials = serials
@@ -88,7 +91,7 @@ class SoaHandler(SerialCounted):
         yield DnsResponseSend(qctx.response)
 
 
-class ZoneAxfrHandler(AxfrHandler, SerialCounted):
+class ZoneAxfrHandler(AxfrHandler, SerialCounted, abc.ABC):
     """
     Serve an AXFR for a single zone whose SOA serial is drawn from a shared
     SerialCounter, bumping it once the transfer completes.  Subclasses set
@@ -128,6 +131,17 @@ class ReconfigAxfrHandler(ZoneAxfrHandler):
         ]
 
 
+class RetryAxfrHandler(ZoneAxfrHandler):
+    zone = RETRY_ZONE
+
+    @property
+    def zone_contents(self) -> Collection[dns.rrset.RRset]:
+        return [
+            ns(self.zone),
+            txt(self.zone),
+        ]
+
+
 class OverrunAxfrHandler(ZoneAxfrHandler):
     """
     Serve the malformed PRIVATEDNS DNSKEY overrun; see OVERRUN_DNSKEY.
@@ -155,6 +169,7 @@ def main() -> None:
         SoaHandler(serials),
         OverrunAxfrHandler(serials),
         ReconfigAxfrHandler(serials),
+        RetryAxfrHandler(serials),
     )
     server.run()
 

@@ -22,9 +22,7 @@ static isc_result_t
 fromtext_sig(ARGS_FROMTEXT) {
 	isc_token_t token;
 	unsigned char alg, c;
-	long i;
 	dns_rdatatype_t covered;
-	char *e;
 	isc_result_t result;
 	isc_buffer_t buffer;
 	uint32_t time_signed, time_expire;
@@ -43,14 +41,7 @@ fromtext_sig(ARGS_FROMTEXT) {
 				      false));
 	result = dns_rdatatype_fromtext(&covered, &token.value.as_textregion);
 	if (result != ISC_R_SUCCESS && result != ISC_R_NOTIMPLEMENTED) {
-		i = strtol(DNS_AS_STR(token), &e, 10);
-		if (i < 0 || i > 65535) {
-			RETTOK(ISC_R_RANGE);
-		}
-		if (*e != 0) {
-			RETTOK(result);
-		}
-		covered = (dns_rdatatype_t)i;
+		RETTOK(isc_parse_uint16(&covered, DNS_AS_STR(token), 10));
 	}
 	RETERR(uint16_tobuffer(covered, target));
 
@@ -312,42 +303,6 @@ fromwire_sig(ARGS_FROMWIRE) {
 	}
 
 	isc_buffer_forward(source, sr.length);
-	return mem_tobuffer(target, sr.base, sr.length);
-}
-
-static isc_result_t
-towire_sig(ARGS_TOWIRE) {
-	isc_region_t sr;
-	dns_name_t name;
-
-	REQUIRE(rdata->type == dns_rdatatype_sig);
-	REQUIRE(rdata->length != 0);
-
-	dns_compress_setpermitted(cctx, false);
-	dns_rdata_toregion(rdata, &sr);
-	/*
-	 * type covered: 2
-	 * algorithm: 1
-	 * labels: 1
-	 * original ttl: 4
-	 * signature expiration: 4
-	 * time signed: 4
-	 * key footprint: 2
-	 */
-	RETERR(mem_tobuffer(target, sr.base, 18));
-	isc_region_consume(&sr, 18);
-
-	/*
-	 * Signer.
-	 */
-	dns_name_init(&name);
-	dns_name_fromregion(&name, &sr);
-	isc_region_consume(&sr, name_length(&name));
-	RETERR(dns_name_towire(&name, cctx, target));
-
-	/*
-	 * Signature.
-	 */
 	return mem_tobuffer(target, sr.base, sr.length);
 }
 

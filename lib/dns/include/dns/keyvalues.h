@@ -33,6 +33,12 @@
 enum {
 	DNS_KEYOWNER_ZONE = 1 << 8,  /* zone key (mandatory for DNSKEY). */
 	DNS_KEYFLAG_REVOKE = 1 << 7, /* key revoked (per rfc5011) */
+	DNS_KEYFLAG_ADT = 1 << 1,    /* authoritative delegation types:
+					zone may contain DELEG.
+					this tells validators that a
+					nonexistence proof for a DELEG
+					record will be included with NS
+					referrals and must be verified. */
 	DNS_KEYFLAG_KSK = 1 << 0,    /* key signing key */
 };
 
@@ -51,6 +57,7 @@ enum {
 	DNS_KEYALG_ECDSA384 = 14,
 	DNS_KEYALG_ED25519 = 15,
 	DNS_KEYALG_ED448 = 16,
+	DNS_KEYALG_MLDSA44 = 18,
 	DNS_KEYALG_INDIRECT = 252,
 	DNS_KEYALG_PRIVATEDNS = 253,
 	DNS_KEYALG_PRIVATEOID = 254, /*%< Key begins with OID giving alg */
@@ -76,3 +83,8 @@ enum {
 
 #define DNS_KEY_ED448SIZE 57
 #define DNS_SIG_ED448SIZE 114
+
+/* draft-westerbaan-dnssec-mldsa */
+#define DNS_KEY_MLDSA44SIZE	1312
+#define DNS_SIG_MLDSA44SIZE	2420
+#define DNS_KEY_MLDSA44SEEDSIZE 32

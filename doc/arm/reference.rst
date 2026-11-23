@@ -2072,11 +2072,11 @@ Boolean Options
 
 .. namedconf:statement:: minimal-any
    :tags: query
-   :short: Controls whether the server replies with only one of the RRsets for a query name, when generating a positive response to a query of type ANY over UDP.
+   :short: Controls whether the server replies with only one of the RRsets for a query name, when generating a positive response to a query of type ANY.
 
    If set to ``yes``, the server replies with only one of
    the RRsets for the query name, and its covering RRSIGs if any,
-   when generating a positive response to a query of type ANY over UDP,
+   when generating a positive response to a query of type ANY,
    instead of replying with all known RRsets for the name. Similarly, a
    query for type RRSIG is answered with the RRSIG records covering
    only one type. This can reduce the impact of some kinds of attack
@@ -2625,8 +2625,8 @@ Boolean Options
    :rfc:`952` and :rfc:`821` as modified by :rfc:`1123`.
 
    :any:`check-names` applies to the owner names of A, AAAA, and MX records.
-   It also applies to the domain names in the RDATA of NS, SOA, MX, and
-   SRV records. It further applies to the RDATA of PTR records where the
+   It also applies to the domain names in the RDATA of NS, SOA, MX, SRV,
+   and DELEG records. It further applies to the RDATA of PTR records where the
    owner name indicates that it is a reverse lookup of a hostname (the
    owner name ends in IN-ADDR.ARPA, IP6.ARPA, or IP6.INT).
 
@@ -2654,6 +2654,14 @@ Boolean Options
    default is to ``warn``. Other possible values are ``fail`` and
    ``ignore``.
 
+.. namedconf:statement:: check-ns
+   :tags: zone
+   :short: Checks existence and correctness of NS records.
+
+   This checks whether a zone has an NS record at its apex, and whether
+   NS records appear to refer to IP addresses. The default is to ``warn``.
+   Other possible values are ``fail`` and ``ignore``.
+
 .. namedconf:statement:: check-wildcard
    :tags: zone
    :short: Checks for non-terminal wildcards.
@@ -2675,6 +2683,8 @@ Boolean Options
    use :iscman:`named-checkzone`). For NS records, only names below top-of-zone
    are checked (for out-of-zone names and glue consistency checks, use
    :iscman:`named-checkzone`). DS records not at delegations are rejected.
+   DELEG records containing "server-name" or "include-delegparam"
+   parameters which point to names below the zone cut are rejected.
    The default is ``yes``.
 
    The use of the SPF record to publish Sender Policy Framework is
@@ -4514,9 +4524,13 @@ Tuning
    :short: Sets the maximum number of iterative queries while servicing a recursive query.
 
    This sets the maximum number of iterative queries that may be sent
-   by a resolver while looking up a single name. If more queries than this
-   need to be sent before an answer is reached, then recursion is terminated
-   and a SERVFAIL response is returned to the client. The default is ``200``.
+   by a resolver while answering a single client query, including all
+   lookups needed for it, such as CNAME targets, name server addresses, and
+   DNSSEC validation. Unlike :any:`max-recursion-queries`, which applies to
+   each name separately, this limit applies to the total. If more queries
+   than this need to be sent before an answer is reached, then recursion is
+   terminated and a SERVFAIL response is returned to the client. The default
+   is ``200``.
 
 .. namedconf:statement:: max-recursion-depth
    :tags: server
@@ -5610,7 +5624,8 @@ Response Rate Limiting
 NXDOMAIN Redirection
 ^^^^^^^^^^^^^^^^^^^^
 
-:iscman:`named` supports NXDOMAIN redirection via two methods:
+:iscman:`named` allows NXDOMAIN redirection via two methods. Note that
+both methods are deprecated, and will be removed in a future release.
 
 -  :any:`Redirect zone <type redirect>`
 -  Redirect namespace
@@ -5625,19 +5640,23 @@ the normal namespace. All the redirect information is contained in the
 zone; there are no delegations.
 
 .. namedconf:statement:: nxdomain-redirect
-   :tags: query
+   :tags: query, deprecated
    :short: Appends the specified suffix to the original query name, when replacing an NXDOMAIN with a redirect namespace.
 
    With a redirect namespace (``option { nxdomain-redirect <suffix> };``),
    the data used to replace the NXDOMAIN is part of the normal namespace
    and is looked up by appending the specified suffix to the original
-   query name. This roughly doubles the cache required to process
+   query name.
+
+   Records with special processing like CNAME, DNAME, NS are not supported.
+
+   This feature roughly doubles the cache required to process
    NXDOMAIN responses, as both the original NXDOMAIN response and the
    replacement data (or an NXDOMAIN indicating that there is no
    replacement) must be stored.
 
 If both a redirect zone and a redirect namespace are configured, the
-redirect zone is tried first.
+:any:`redirect zone <type redirect>` is tried first.
 
 ``server`` Block Grammar
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -6489,6 +6508,12 @@ keys
     Each KSK/ZSK pair must have the same algorithm. A CSK combines the
     functionality of a ZSK and a KSK.
 
+    You can optionally set one or more key flags with ``flags``.
+    Two keywords are allowed, ``sep`` and ``adt``, and they will set the
+    corresponding key flags. If ``flags`` is not set, any KASP key with
+    the role ``csk`` or ``ksk`` will have the SEP bit set, and none of
+    the keys will have the ADT bit set.
+
 .. note:: When changing the ``key-directory`` or the ``key-store``, BIND will
    be unable to find existing key files. Be sure to copy key files to the
    new directory before changing the path used in the configuration file.
@@ -7093,7 +7118,7 @@ Zone Types
    globally, re-specify the global forwarders.
 
 .. namedconf:statement:: type redirect
-   :tags: zone
+   :tags: zone, deprecated
    :short: Contains information to answer queries when normal resolution would return NXDOMAIN.
 
    Redirect zones are used to provide answers to queries when normal
@@ -7115,8 +7140,8 @@ Zone Types
    Spanish names (under COM.ES), use wildcard entries
    called ``*.COM.ES.``.
 
-   Note that the redirect zone supports all possible types; it is not
-   limited to A and AAAA records.
+   Note that while the redirect zone supports A, AAAA and other ordinary types,
+   records with special behavior including CNAME, DNAME, NS are not supported.
 
    If a redirect zone is configured with a :any:`primaries` option, then it is
    transferred in as if it were a secondary zone. Otherwise, it is loaded from a
@@ -7128,6 +7153,10 @@ Zone Types
    redirect zone configured as a secondary, use :option:`rndc retransfer -redirect <rndc retransfer>`.
    When using :option:`rndc reload` without specifying a zone name, redirect
    zones are reloaded along with other zones.
+
+   See also `NXDOMAIN Redirection`_.
+
+   Redirect zones are deprecated, and will be removed in a future release.
 
 .. namedconf:statement:: in-view
    :tags: view, zone

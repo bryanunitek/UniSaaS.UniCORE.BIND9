@@ -23,7 +23,7 @@ import dns.tsig
 import dns.zone
 import pytest
 
-from isctest.util import param
+from isctest.util import newer_mtime, param
 
 import isctest
 
@@ -165,7 +165,10 @@ def test_zone_is_dumped_after_transfer(ns1, ns2, ns3, ns6, ns7):
         "ns6/primary.db",
         "ns7/primary2.db",
     ]:
-        with fileinput.FileInput(zone_file, inplace=True) as file:
+        with (
+            newer_mtime(zone_file),
+            fileinput.FileInput(zone_file, inplace=True) as file,
+        ):
             for line in file:
                 print(
                     line.replace(" 0.0.0.0", " 0.0.0.1").replace(
@@ -519,6 +522,28 @@ def test_ixfr_too_many_records(named_port, ns6):
                 "ixfr-too-big",
                 "10.53.0.1",
                 "Transfer status: too many records",
+                named_port,
+            )
+        )
+
+
+# test that though a zone with too many records is rejected, the next primary is tried
+def test_retry_too_many_records(named_port, ns6):
+    with ns6.watch_log_from_here() as watcher:
+        ns6.rndc("retransfer retry-too-big.")
+        watcher.wait_for_line(
+            isctest.transfer.transfer_message(
+                "retry-too-big",
+                "10.53.0.1",
+                "Transfer status: too many records",
+                named_port,
+            )
+        )
+        watcher.wait_for_line(
+            isctest.transfer.transfer_message(
+                "retry-too-big",
+                "10.53.0.9",
+                "Transfer status: success",
                 named_port,
             )
         )

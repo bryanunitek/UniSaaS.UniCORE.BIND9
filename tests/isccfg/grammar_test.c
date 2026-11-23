@@ -34,6 +34,7 @@
 #include <isc/util.h>
 
 #include <isccfg/cfg.h>
+#include <isccfg/clause.h>
 #include <isccfg/grammar.h>
 #include <isccfg/namedconf.h>
 
@@ -73,7 +74,7 @@ assert_text(const char *text) {
 }
 
 static void
-test__querysource(const char *clause_name, const char *name,
+test__querysource(enum cfg_clause clause_name, enum cfg_clause name,
 		  const char *expected) {
 	const cfg_clausedef_t *options_clause = NULL;
 	options_clause = cfg_map_findclause(&cfg_type_namedconf, clause_name);
@@ -87,22 +88,22 @@ test__querysource(const char *clause_name, const char *name,
 }
 
 ISC_RUN_TEST_IMPL(query_source) {
-	test__querysource("options", "query-source",
+	test__querysource(CFG_CLAUSE_OPTIONS, CFG_CLAUSE_QUERY_SOURCE,
 			  "[ address ] ( <ipv4_address> | * | none )");
 }
 
 ISC_RUN_TEST_IMPL(query_source_v6) {
-	test__querysource("options", "query-source-v6",
+	test__querysource(CFG_CLAUSE_OPTIONS, CFG_CLAUSE_QUERY_SOURCE_V6,
 			  "[ address ] ( <ipv6_address> | * | none )");
 }
 
 ISC_RUN_TEST_IMPL(server_query_source) {
-	test__querysource("server", "query-source",
+	test__querysource(CFG_CLAUSE_SERVER, CFG_CLAUSE_QUERY_SOURCE,
 			  "[ address ] ( <ipv4_address> | * )");
 }
 
 ISC_RUN_TEST_IMPL(server_query_source_v6) {
-	test__querysource("server", "query-source-v6",
+	test__querysource(CFG_CLAUSE_SERVER, CFG_CLAUSE_QUERY_SOURCE_V6,
 			  "[ address ] ( <ipv6_address> | * )");
 }
 
@@ -152,8 +153,62 @@ ISC_RUN_TEST_IMPL(query_source_print_addr) {
 				 "options { query-source-v6 ::1; }; ");
 }
 
+ISC_RUN_TEST_IMPL(zone_options_validity) {
+	const struct {
+		const char *zone;
+		const char *template;
+		unsigned int ztype;
+		bool valid;
+	} cases[] = {
+		{ "{}", NULL, CFG_ZONE_PRIMARY, true },
+		{ "{ type primary; file \"example.db\"; }", NULL,
+		  CFG_ZONE_PRIMARY, true },
+		{ "{ type primary; allow-update { none; }; }", NULL,
+		  CFG_ZONE_SECONDARY, false },
+		{ "{}", "{ allow-update { none; }; }", CFG_ZONE_SECONDARY,
+		  false },
+		{ "{ notify yes; }", "{ notify no; }", CFG_ZONE_PRIMARY, true },
+		{ "{ allow-update { none; }; }", "{ allow-update { any; }; }",
+		  CFG_ZONE_SECONDARY, false },
+		{ "{ in-view \"other\"; }", NULL, CFG_ZONE_INVIEW, true },
+		{ "{ in-view \"other\"; notify yes; }", NULL, CFG_ZONE_INVIEW,
+		  false },
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+		const char *texts[] = { cases[i].zone, cases[i].template };
+		cfg_obj_t *maps[] = { NULL, NULL };
+
+		for (size_t j = 0; j < ARRAY_SIZE(texts); j++) {
+			isc_buffer_t buffer;
+			if (texts[j] == NULL) {
+				continue;
+			}
+			isc_buffer_constinit(&buffer, texts[j],
+					     strlen(texts[j]));
+			isc_buffer_add(&buffer, strlen(texts[j]));
+			assert_int_equal(cfg_parse_buffer(&buffer,
+							  "zone-options", 0,
+							  &cfg_type_zoneopts, 0,
+							  &maps[j]),
+					 ISC_R_SUCCESS);
+		}
+
+		assert_int_equal(cfg_zoneopts_validforzone(maps[0], maps[1],
+							   cases[i].ztype),
+				 cases[i].valid);
+
+		for (size_t j = 0; j < ARRAY_SIZE(maps); j++) {
+			if (maps[j] != NULL) {
+				cfg_obj_detach(&maps[j]);
+			}
+		}
+	}
+}
+
 ISC_TEST_LIST_START
 
+ISC_TEST_ENTRY(zone_options_validity)
 ISC_TEST_ENTRY(query_source)
 ISC_TEST_ENTRY(query_source_v6)
 ISC_TEST_ENTRY(server_query_source)

@@ -111,6 +111,7 @@ stages:
   - system
   - performance
   - docs
+  - packages
   - postmerge
   - release
 
@@ -608,9 +609,9 @@ stages:
     - git ls-files -z | xargs -0 -r touch -t 199808172205
     # Build the test binaries here (rather than in the build job) and run them.
     # CMocka tests: Mark Meson-generated XMLs to exclude them later with --logbase, CMocka generates better ones.
-    - meson test -C build --suite cmocka --wrapper "$MESON_WRAPPER" --logbase "exclude-" || RET=1
+    - meson test -C build --print-errorlogs --suite cmocka --wrapper "$MESON_WRAPPER" --logbase "exclude-" || RET=1
     # Non-CMocka test: Use Meson-generated XMLs.
-    - meson test -C build --no-suite cmocka --wrapper "$MESON_WRAPPER" --logbase "include-" || RET=1
+    - meson test -C build --print-errorlogs --no-suite cmocka --wrapper "$MESON_WRAPPER" --logbase "include-" || RET=1
     - >
       "$PYTHON" "$CI_PROJECT_DIR"/bind9-qa/ci/postprocess_junit_files.py build/meson-logs/include-*.junit.xml --output "$CI_PROJECT_DIR/junit.xml"
     - (exit $RET)
@@ -977,6 +978,70 @@ tarball-create:
       - build/meson-dist/*.tar.xz
   needs: []
 
+# Jobs building RPM packages in mock from the "tarball-create" artifacts
+#
+# The packaging sources (spec file et al.) and the Makefile driving mock are
+# taken from the public bind-rpms repository.  The isc-bind-* dependency
+# packages (jemalloc, libuv, fstrm, protobuf, ...) are provided by the Copr
+# repository of the BIND edition being built.  The built packages are then
+# installed into a pristine mock chroot and smoke-tested ("make check").
+#
+# The trailing part of the RPM Release field is derived from the pipeline
+# creation time, so packages built by a later pipeline are always considered
+# newer by RPM than packages built by an earlier one.
+#
+# Each of these jobs downloads several hundred megabytes from external
+# services, which is why they only run automatically in scheduled pipelines.
+
+.rpms: &rpms_job
+  <<: *linux_amd64
+  stage: packages
+  image: registry.gitlab.isc.org/isc-projects/images/packager:rpm
+  rules:
+    - *rule_mr_manual
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE =~ /^(api|pipeline|trigger|web)$/ && $REBASE_ONLY != "1"'
+      when: manual
+      allow_failure: true
+  needs:
+    - job: tarball-create
+      artifacts: true
+  script:
+    # The packager image appends a Cloudsmith repository definition with
+    # @...@ placeholders (substituted only by the private bind-rpms CI) to
+    # the mock chroot configs; edit that block out so that dnf inside mock
+    # does not choke on it.
+    - sed -i "/^config_opts\['yum.conf'\] += '''/,/'''$/d" /etc/mock/${TARGET_OS}.cfg
+    - git clone --depth 1 https://gitlab.isc.org/isc-packages/rpms/bind.git bind-rpms
+    - >
+      make -C bind-rpms rpms/${TARGET_OS} check/${TARGET_OS}
+      SOURCE_URL="$(readlink -e build/meson-dist/bind-*.tar.xz)"
+      PACKAGE_REVISION="$(date --utc --date "${CI_PIPELINE_CREATED_AT}" +%Y%m%d%H%M%S).git${CI_COMMIT_SHORT_SHA}"
+      DEPENDENCY_REPO_URL="https://download.copr.fedorainfracloud.org/results/isc/bind-dev/${TARGET_OS#alma+}/"
+  artifacts:
+    paths:
+      - bind-rpms/${TARGET_OS}/
+    # On success, the artifacts are the built RPMs.  When the build fails,
+    # the same directory holds the mock logs instead, so upload it in either
+    # case.
+    when: always
+    expire_in: 1 week
+
+rpms:el8:amd64:
+  <<: *rpms_job
+  variables:
+    TARGET_OS: alma+epel-8-x86_64
+
+rpms:el9:amd64:
+  <<: *rpms_job
+  variables:
+    TARGET_OS: alma+epel-9-x86_64
+
+rpms:el10:amd64:
+  <<: *rpms_job
+  variables:
+    TARGET_OS: alma+epel-10-x86_64
+
 # Jobs for doc builds on Debian 13 "trixie" (amd64)
 
 changelog:
@@ -1058,7 +1123,7 @@ cross-version-config-tests:
     # file impossible (GitLab Runner uses "set -o pipefail").
     - RET=0
     - >
-      "$PYTEST" --setup-only --junit-xml="$CI_PROJECT_DIR"/junit_pytest.xml -n "${TEST_PARALLEL_JOBS:-1}" || RET=1
+      "$PYTEST" --setup-only --deselect=isctest/ --junit-xml="$CI_PROJECT_DIR"/junit_pytest.xml -n "${TEST_PARALLEL_JOBS:-1}" || RET=1
     - *git_clone_bind9-qa
     - >
       "$PYTHON" "$CI_PROJECT_DIR"/bind9-qa/ci/postprocess_junit_files.py "$CI_PROJECT_DIR"/junit_pytest.xml --output "$CI_PROJECT_DIR"/junit.xml
@@ -1386,8 +1451,7 @@ gcc:ossl3:trixie:amd64:
 system:gcc:ossl3:trixie:amd64:
   # Set up environment variables to run pkcs11-provider based system tests
   variables:
-    OPENSSL_CONF: "/var/tmp/etc/openssl-provider.cnf"
-    SOFTHSM2_CONF: "/var/tmp/softhsm2/softhsm2.conf"
+    BIND9_TEST_KRYOPTIC_MODULE: "/usr/lib/kryoptic/libkryoptic_pkcs11.so"
   <<: *debian_trixie_amd64_image
   <<: *system_test_job
   needs:
@@ -1395,10 +1459,6 @@ system:gcc:ossl3:trixie:amd64:
       artifacts: true
 
 unit:gcc:ossl3:amd64:
-  # Set up environment variables to run unit tests with PKCS#11-aware OpenSSL
-  variables:
-    OPENSSL_CONF: "/var/tmp/etc/openssl-provider.cnf"
-    SOFTHSM2_CONF: "/var/tmp/softhsm2/softhsm2.conf"
   <<: *debian_trixie_amd64_image
   <<: *unit_test_job
   needs:
@@ -1903,7 +1963,7 @@ release:
       EOF
     - chmod +x "/tmp/${CI_JOB_NAME}.sh"
     - /bin/sh -c "set -e -x; ${SSH_SCRIPT_RUNNER_PRE}"
-    - echo -e "\e[31m*** Sleeping until /tmp/${CI_JOB_NAME}.sh is executed over SSH... ⌛\e[0m"
+    - echo -e "\e[31m*** Sleeping until /tmp/${CI_JOB_NAME}.sh is executed over SSH; in order to proceed, run:\n***\n***     ${SSH_COMMAND_HINT}\n***\e[0m"
     - while [ "$(cat "/tmp/${CI_JOB_NAME}-done")" != "${CI_COMMIT_TAG}" ]; do sleep 10; done
     - /bin/sh -c "set -e -x; ${SSH_SCRIPT_RUNNER_POST}"
     - cp "/tmp/${CI_JOB_NAME}.log" "${CI_PROJECT_DIR}/${CI_JOB_NAME}-${CI_COMMIT_TAG}.log"
@@ -1925,6 +1985,7 @@ sign:
       cat "/tmp/${CI_COMMIT_TAG}.asc" > "${RELEASE_DIRECTORY}/$${SOURCE_TARBALL}.asc"
       tar --create --file="${RELEASE_DIRECTORY}".tar.gz --gzip "${RELEASE_DIRECTORY}"
       rm -f "/tmp/${CI_COMMIT_TAG}.bin" "/tmp/${CI_COMMIT_TAG}.asc"
+    SSH_COMMAND_HINT: "ssh bind9-${CI_JOB_NAME}"
   artifacts:
     paths:
       - bind-${CI_COMMIT_TAG}-release.tar.gz
@@ -1952,6 +2013,7 @@ staging:
       ssh "${STAGING_USER_ACTIONS}@${STAGING_HOST}" "unpack ${CI_COMMIT_TAG}"
     SSH_SCRIPT_RUNNER_POST: |-
       rm -f "/tmp/${RELEASE_TARBALL}"
+    SSH_COMMAND_HINT: "ssh-agent ssh bind9-confirm-${CI_JOB_NAME}"
   artifacts:
     paths:
       - staging-${CI_COMMIT_TAG}.log
@@ -1974,6 +2036,7 @@ publish-private:
       ssh "${STAGING_USER_ACTIONS}@${STAGING_HOST}" "publish-private ${CI_COMMIT_TAG}"
     SSH_SCRIPT_RUNNER_POST: |-
       awk '/^Public Use URL:/ {print $$NF}' "/tmp/${CI_JOB_NAME}.log" > "url-${CI_COMMIT_TAG}.txt"
+    SSH_COMMAND_HINT: "ssh-agent ssh bind9-confirm-${CI_JOB_NAME}"
   artifacts:
     paths:
       - publish-private-${CI_COMMIT_TAG}.log
@@ -1999,6 +2062,7 @@ publish:
   variables:
     SSH_SCRIPT_CLIENT: |-
       ssh "${STAGING_USER_ACTIONS}@${STAGING_HOST}" "publish ${CI_COMMIT_TAG}"
+    SSH_COMMAND_HINT: "ssh-agent ssh bind9-confirm-${CI_JOB_NAME}"
   artifacts:
     paths:
       - publish-${CI_COMMIT_TAG}.log
@@ -2100,7 +2164,7 @@ assign-milestones:
       - commit.txt
     expire_in: "1 month"
 
-.monitor-rpm-job-common: &monitor_rpm_job_common
+.rpm-job-monitor-common: &rpm_job_monitor_common
   <<: *base_image
   environment:
     name: write-zulip
@@ -2121,14 +2185,14 @@ assign-milestones:
       - commit.txt
     expire_in: "1 month"
 
-.monitor-rpm-build-job: &monitor_rpm_build_job
-  <<: *monitor_rpm_job_common
+.rpm-build-job-monitor: &rpm_build_job_monitor
+  <<: *rpm_job_monitor_common
   script:
     - >
       "${CI_PROJECT_DIR}"/bind9-qa/releng/update_rpms.py monitor-build --service "${SERVICE}" --version "${CI_COMMIT_TAG}" --commit "$(cat "commit.txt")"
 
-.monitor-rpm-publish-job: &monitor_rpm_publish_job
-  <<: *monitor_rpm_job_common
+.rpm-publish-job-monitor: &rpm_publish_job_monitor
+  <<: *rpm_job_monitor_common
   script:
     - >
       "${CI_PROJECT_DIR}"/bind9-qa/releng/update_rpms.py monitor-publish --service "${SERVICE}" --commit "$(cat "commit.txt")"
@@ -2145,8 +2209,8 @@ rpms-cloudsmith-build:
   rules:
     - *rule_tag_open_source_maintenance
 
-monitor-rpms-cloudsmith-build:
-  <<: *monitor_rpm_build_job
+rpms-cloudsmith-build-monitor:
+  <<: *rpm_build_job_monitor
   variables:
     SERVICE: cloudsmith
   rules:
@@ -2165,8 +2229,8 @@ rpms-cloudsmith-build-private:
   rules:
     - *rule_tag_security_or_subscription
 
-monitor-rpms-cloudsmith-build-private:
-  <<: *monitor_rpm_build_job
+rpms-cloudsmith-build-private-monitor:
+  <<: *rpm_build_job_monitor
   variables:
     SERVICE: cloudsmith
   rules:
@@ -2185,13 +2249,13 @@ rpms-cloudsmith-publish:
   variables:
     SERVICE: cloudsmith
   needs:
-    - job: monitor-rpms-cloudsmith-build
+    - job: rpms-cloudsmith-build-monitor
       artifacts: true
   rules:
     - *rule_tag_open_source_maintenance
 
-monitor-rpms-cloudsmith-publish:
-  <<: *monitor_rpm_publish_job
+rpms-cloudsmith-publish-monitor:
+  <<: *rpm_publish_job_monitor
   variables:
     SERVICE: cloudsmith
   needs:
@@ -2208,13 +2272,13 @@ rpms-cloudsmith-publish-private:
   variables:
     SERVICE: cloudsmith
   needs:
-    - job: monitor-rpms-cloudsmith-build-private
+    - job: rpms-cloudsmith-build-private-monitor
       artifacts: true
   rules:
     - *rule_tag_security_or_subscription
 
-monitor-rpms-cloudsmith-publish-private:
-  <<: *monitor_rpm_publish_job
+rpms-cloudsmith-publish-private-monitor:
+  <<: *rpm_publish_job_monitor
   variables:
     SERVICE: cloudsmith
   needs:
@@ -2235,8 +2299,8 @@ rpms-copr:
   rules:
     - *rule_tag_open_source
 
-monitor-rpms-copr:
-  <<: *monitor_rpm_build_job
+rpms-copr-monitor:
+  <<: *rpm_build_job_monitor
   variables:
     SERVICE: copr
   needs:
@@ -2294,7 +2358,7 @@ update-docker-image:
   rules:
     - *rule_tag_open_source
 
-monitor-update-docker-image:
+update-docker-image-monitor:
   <<: *base_image
   stage: release
   environment:
@@ -2456,6 +2520,8 @@ update-stable-tag:
 
 .customer-git: &customer_git
   <<: *base_image
+  tags:
+    - smalljob
   stage: release
   when: manual
   variables:  # ensure clean git environment and sufficient history

@@ -23,6 +23,7 @@
 #include <isc/lex.h>
 #include <isc/lib.h>
 #include <isc/mem.h>
+#include <isc/parseint.h>
 
 #include <dns/callbacks.h>
 #include <dns/dnssec.h>
@@ -304,7 +305,7 @@ create_key(ksr_ctx_t *ksr, dns_kasp_t *kasp, dns_kasp_key_t *kaspkey,
 	bool conflict = false;
 	bool freekey = false;
 	bool show_progress = true;
-	char algstr[DNS_SECALG_FORMATSIZE];
+	char algstr[DST_ALG_FORMATSIZE];
 	char filename[PATH_MAX + 1];
 	char timestr[26]; /* Minimal buf as per ctime_r() spec. */
 	dst_key_t *key = NULL;
@@ -312,14 +313,9 @@ create_key(ksr_ctx_t *ksr, dns_kasp_t *kasp, dns_kasp_key_t *kaspkey,
 	isc_buffer_t buf;
 	isc_result_t result;
 	isc_stdtime_t prepub;
-	uint16_t flags = DNS_KEYOWNER_ZONE;
+	uint16_t flags = dns_kasp_key_flags(kaspkey);
 
 	isc_stdtime_tostring(inception, timestr, sizeof(timestr));
-
-	/* ZSK or KSK? */
-	if (ksr->ksk) {
-		flags |= DNS_KEYFLAG_KSK;
-	}
 
 	/* Check algorithm and size. */
 	dst_algorithm_format(ksr->alg, algstr, sizeof(algstr));
@@ -356,6 +352,9 @@ create_key(ksr_ctx_t *ksr, dns_kasp_t *kasp, dns_kasp_key_t *kaspkey,
 		break;
 	case DST_ALG_ED448:
 		ksr->size = 456;
+		break;
+	case DST_ALG_MLDSA44:
+		ksr->size = DNS_KEY_MLDSA44SIZE * 8;
 		break;
 	default:
 		show_progress = false;
@@ -516,7 +515,7 @@ print_rdata(dns_rdataset_t *rrset) {
 	isc_buffer_t target;
 	isc_region_t r;
 	isc_result_t result;
-	char buf[4096];
+	char buf[65536];
 
 	isc_buffer_init(&target, buf, sizeof(buf));
 	result = dns_rdataset_totext(rrset, name, false, false, &target);
@@ -530,7 +529,7 @@ print_rdata(dns_rdataset_t *rrset) {
 static isc_stdtime_t
 print_dnskeys(dns_kasp_key_t *kaspkey, dns_ttl_t ttl, dns_dnsseckeylist_t *keys,
 	      isc_stdtime_t inception, isc_stdtime_t next_inception) {
-	char algstr[DNS_SECALG_FORMATSIZE];
+	char algstr[DST_ALG_FORMATSIZE];
 	char timestr[26]; /* Minimal buf as per ctime_r() spec. */
 	dns_rdatalist_t *rdatalist = NULL;
 	dns_rdataset_t rdataset = DNS_RDATASET_INIT;
@@ -538,8 +537,8 @@ print_dnskeys(dns_kasp_key_t *kaspkey, dns_ttl_t ttl, dns_dnsseckeylist_t *keys,
 	isc_stdtime_t next_bundle = next_inception;
 
 	isc_stdtime_tostring(inception, timestr, sizeof(timestr));
-	dns_secalg_format(dns_kasp_key_algorithm(kaspkey), algstr,
-			  sizeof(algstr));
+	dst_algorithm_format(dns_kasp_key_algorithm(kaspkey), algstr,
+			     sizeof(algstr));
 
 	/* Fetch matching key pair. */
 	rdatalist = isc_mem_get(isc_g_mctx, sizeof(*rdatalist));
@@ -1304,7 +1303,6 @@ main(int argc, char *argv[]) {
 	isc_result_t result;
 	isc_buffer_t buf;
 	int ch;
-	char *endp;
 	ksr_ctx_t ksr = {
 		.now = isc_stdtime_now(),
 	};
@@ -1359,8 +1357,9 @@ main(int argc, char *argv[]) {
 			version(isc_commandline_progname);
 			break;
 		case 'v':
-			verbose = strtoul(isc_commandline_argument, &endp, 0);
-			if (*endp != '\0') {
+			result = isc_parse_signed_number(
+				&verbose, isc_commandline_argument, 0);
+			if (result != ISC_R_SUCCESS) {
 				fatal("-v must be followed by a number");
 			}
 			break;

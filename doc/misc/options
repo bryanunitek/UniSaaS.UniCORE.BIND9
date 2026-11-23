@@ -15,7 +15,7 @@ dnssec-policy <string> {
 	cds-digest-types { <string>; ... };
 	dnskey-ttl <duration>;
 	inline-signing <boolean>;
-	keys { ( csk | ksk | zsk ) [ key-directory | key-store <string> ] lifetime <duration_or_unlimited> algorithm <string> [ tag-range <integer> <integer> ] [ <integer> ]; ... };
+	keys { ( csk | ksk | zsk ) [ key-directory | key-store <string> ] lifetime <duration_or_unlimited> algorithm <string> [ tag-range <integer> <integer> ] [ <integer> ] [ flags ( sep | adt ) ... ]; ... };
 	manual-mode <boolean>;
 	max-zone-ttl <duration>;
 	nsec3param [ iterations <integer> ] [ optout <boolean> ] [ salt-length <integer> ];
@@ -91,6 +91,7 @@ options {
 	check-mx ( fail | warn | ignore );
 	check-mx-cname ( fail | warn | ignore );
 	check-names ( primary | master | secondary | slave | response ) ( fail | warn | ignore ); // may occur multiple times
+	check-ns ( fail | warn | ignore );
 	check-sibling <boolean>;
 	check-spf ( warn | ignore );
 	check-srv-cname ( fail | warn | ignore );
@@ -229,7 +230,7 @@ options {
 	nsec3-test-zone <boolean>; // test only
 	nta-lifetime <duration>;
 	nta-recheck <duration>;
-	nxdomain-redirect <string>;
+	nxdomain-redirect <string>; // deprecated
 	parental-source ( <ipv4_address> | * );
 	parental-source-v6 ( <ipv6_address> | * );
 	pid-file ( <quoted_string> | none );
@@ -384,6 +385,7 @@ template <string> {
 	check-mx ( fail | warn | ignore );
 	check-mx-cname ( fail | warn | ignore );
 	check-names ( fail | warn | ignore );
+	check-ns ( fail | warn | ignore );
 	check-sibling <boolean>;
 	check-spf ( warn | ignore );
 	check-srv-cname ( fail | warn | ignore );
@@ -504,6 +506,7 @@ view <string> [ <class> ] {
 	check-mx ( fail | warn | ignore );
 	check-mx-cname ( fail | warn | ignore );
 	check-names ( primary | master | secondary | slave | response ) ( fail | warn | ignore ); // may occur multiple times
+	check-ns ( fail | warn | ignore );
 	check-sibling <boolean>;
 	check-spf ( warn | ignore );
 	check-srv-cname ( fail | warn | ignore );
@@ -622,7 +625,7 @@ view <string> [ <class> ] {
 	nsec3-test-zone <boolean>; // test only
 	nta-lifetime <duration>;
 	nta-recheck <duration>;
-	nxdomain-redirect <string>;
+	nxdomain-redirect <string>; // deprecated
 	parental-source ( <ipv4_address> | * );
 	parental-source-v6 ( <ipv6_address> | * );
 	plugin ( query ) <string> [ { <unspecified-text> } ]; // may occur multiple times

@@ -41,6 +41,7 @@
 #include <isccc/util.h>
 
 #include <isccfg/check.h>
+#include <isccfg/clause.h>
 #include <isccfg/namedconf.h>
 
 #include <named/config.h>
@@ -109,6 +110,7 @@ struct named_controls {
 	bool shuttingdown;
 	isc_mutex_t symtab_lock;
 	isc_symtab_t *symtab;
+	isc_stdtime_t last_cleanup_time;
 };
 
 static isc_result_t
@@ -147,7 +149,12 @@ ISC_REFCOUNT_DECL(controllistener);
 ISC_REFCOUNT_DECL(controlconnection);
 #endif
 
-#define CLOCKSKEW 300
+/*
+ * The tolerated clock skew (in seconds) for the incoming control channel
+ * commands. Also, the double amount of this value is used as a lifetime for
+ * the items in the duplicate commands list before they get cleaned up.
+ */
+constexpr uint32_t cc_clockskew = 300;
 
 static void
 free_controlkey(controlkey_t *key, isc_mem_t *mctx) {
@@ -316,7 +323,11 @@ control_respond(controlconnection_t *conn) {
 
 	data = isccc_alist_lookup(conn->response, "_data");
 	if (data != NULL) {
+		const char *errid = isc_result_toid(result);
 		if (isccc_cc_defineuint32(data, "result", result) == NULL) {
+			goto cleanup;
+		}
+		if (isccc_cc_definestring(data, "errid", errid) == NULL) {
 			goto cleanup;
 		}
 	}
@@ -458,8 +469,8 @@ control_recvmessage(isc_nmhandle_t *handle ISC_ATTR_UNUSED, isc_result_t result,
 	}
 
 	if (isccc_cc_lookupuint32(conn->ctrl, "_tim", &sent) == ISC_R_SUCCESS) {
-		if ((sent + CLOCKSKEW) < conn->now ||
-		    (sent - CLOCKSKEW) > conn->now)
+		if (sent + cc_clockskew < conn->now ||
+		    sent - cc_clockskew > conn->now)
 		{
 			CLEANUP(DNS_R_CLOCKSKEW);
 		}
@@ -480,9 +491,12 @@ control_recvmessage(isc_nmhandle_t *handle ISC_ATTR_UNUSED, isc_result_t result,
 	 * Duplicate suppression (required for UDP).
 	 */
 	LOCK(&listener->controls->symtab_lock);
-	isccc_cc_cleansymtab(listener->controls->symtab, conn->now);
+	if (conn->now > listener->controls->last_cleanup_time) {
+		isccc_cc_cleansymtab(listener->controls->symtab, conn->now);
+		listener->controls->last_cleanup_time = conn->now;
+	}
 	result = isccc_cc_checkdup(listener->controls->symtab, conn->request,
-				   conn->now);
+				   conn->now + 2 * cc_clockskew + 1);
 	UNLOCK(&listener->controls->symtab_lock);
 	if (result != ISC_R_SUCCESS) {
 		if (result == ISC_R_EXISTS) {
@@ -719,8 +733,10 @@ register_keys(const cfg_obj_t *control, const cfg_obj_t *keylist,
 			const char *secretstr = NULL;
 			unsigned int algtype;
 
-			(void)cfg_map_get(keydef, "algorithm", &algobj);
-			(void)cfg_map_get(keydef, "secret", &secretobj);
+			(void)cfg_map_get(keydef, CFG_CLAUSE_ALGORITHM,
+					  &algobj);
+			(void)cfg_map_get(keydef, CFG_CLAUSE_SECRET,
+					  &secretobj);
 			INSIST(algobj != NULL && secretobj != NULL);
 
 			algstr = cfg_obj_asstring(algobj);
@@ -785,7 +801,7 @@ get_rndckey(isc_mem_t *mctx, controlkeylist_t *keyids) {
 	}
 
 	CHECK(cfg_parse_file(named_g_keyfile, &cfg_type_rndckey, 0, &config));
-	CHECK(cfg_map_get(config, "key", &key));
+	CHECK(cfg_map_get(config, CFG_CLAUSE_KEY, &key));
 
 	keyid = isc_mem_get(mctx, sizeof(*keyid));
 	*keyid = (controlkey_t){
@@ -797,8 +813,8 @@ get_rndckey(isc_mem_t *mctx, controlkeylist_t *keyids) {
 
 	CHECK(isccfg_check_key(key));
 
-	(void)cfg_map_get(key, "algorithm", &algobj);
-	(void)cfg_map_get(key, "secret", &secretobj);
+	(void)cfg_map_get(key, CFG_CLAUSE_ALGORITHM, &algobj);
+	(void)cfg_map_get(key, CFG_CLAUSE_SECRET, &secretobj);
 	INSIST(algobj != NULL && secretobj != NULL);
 
 	algstr = cfg_obj_asstring(algobj);
@@ -862,7 +878,7 @@ get_key_info(const cfg_obj_t *config, const cfg_obj_t *control,
 	if (!cfg_obj_isvoid(control_keylist) &&
 	    cfg_list_first(control_keylist) != NULL)
 	{
-		result = cfg_map_get(config, "key", &global_keylist);
+		result = cfg_map_get(config, CFG_CLAUSE_KEY, &global_keylist);
 
 		if (result == ISC_R_SUCCESS) {
 			*global_keylistp = global_keylist;
@@ -1119,7 +1135,7 @@ named_controls_configure(named_controls_t *cp, const cfg_obj_t *config,
 	/*
 	 * Get the list of named.conf 'controls' statements.
 	 */
-	(void)cfg_map_get(config, "controls", &controlslist);
+	(void)cfg_map_get(config, CFG_CLAUSE_CONTROLS, &controlslist);
 
 	/*
 	 * Run through the new control channel list, noting sockets that
@@ -1137,7 +1153,8 @@ named_controls_configure(named_controls_t *cp, const cfg_obj_t *config,
 
 			controls = cfg_listelt_value(element);
 
-			(void)cfg_map_get(controls, "unix", &unixcontrols);
+			(void)cfg_map_get(controls, CFG_CLAUSE_UNIX,
+					  &unixcontrols);
 			if (unixcontrols != NULL) {
 				cfg_obj_log(controls, ISC_LOG_ERROR,
 					    "UNIX domain sockets are not "
@@ -1145,7 +1162,8 @@ named_controls_configure(named_controls_t *cp, const cfg_obj_t *config,
 				return ISC_R_FAILURE;
 			}
 
-			(void)cfg_map_get(controls, "inet", &inetcontrols);
+			(void)cfg_map_get(controls, CFG_CLAUSE_INET,
+					  &inetcontrols);
 			if (inetcontrols == NULL) {
 				continue;
 			}

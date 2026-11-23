@@ -35,11 +35,11 @@
 #include <dns/lib.h>
 #include <dns/name.h>
 #include <dns/rdataclass.h>
-#include <dns/secalg.h>
 
 #include <dst/dst.h>
 
 #include "dnssectool.h"
+#include "isc/parseint.h"
 
 #define MAX_RSA 4096 /* should be long enough... */
 
@@ -112,7 +112,7 @@ main(int argc, char **argv) {
 	dst_key_t *key = NULL;
 	dns_fixedname_t fname;
 	dns_name_t *name;
-	uint16_t flags = 0, kskflag = 0, revflag = 0;
+	uint16_t flags = 0, kskflag = 0, revflag = 0, adtflag = 0;
 	dst_algorithm_t alg;
 	int ch;
 	isc_result_t result;
@@ -171,6 +171,8 @@ main(int argc, char **argv) {
 				kskflag = DNS_KEYFLAG_KSK;
 			} else if (toupper(c) == 'R') {
 				revflag = DNS_KEYFLAG_REVOKE;
+			} else if (toupper(c) == 'A') {
+				adtflag = DNS_KEYFLAG_ADT;
 			} else {
 				fatal("unknown flag '%s'",
 				      isc_commandline_argument);
@@ -202,9 +204,9 @@ main(int argc, char **argv) {
 			if (*endp != ':' || ul > 0xffff) {
 				fatal("-M range invalid");
 			}
-			tag_max = ul = strtoul(endp + 1, &endp, 10);
-			if (*endp != '\0' || ul > 0xffff || tag_max <= tag_min)
-			{
+			result = isc_parse_unsigned_number(&tag_max, endp + 1,
+							   10);
+			if (result != ISC_R_SUCCESS || tag_max <= tag_min) {
 				fatal("-M range invalid");
 			}
 			break;
@@ -219,8 +221,9 @@ main(int argc, char **argv) {
 			fatal("The -t option has been deprecated.");
 			break;
 		case 'v':
-			verbose = strtol(isc_commandline_argument, &endp, 0);
-			if (*endp != '\0') {
+			result = isc_parse_signed_number(
+				&verbose, isc_commandline_argument, 0);
+			if (result != ISC_R_SUCCESS) {
 				fatal("-v must be followed by a number");
 			}
 			break;
@@ -521,8 +524,8 @@ main(int argc, char **argv) {
 	switch (alg) {
 	case DST_ALG_RSASHA1:
 	case DST_ALG_NSEC3RSASHA1: {
-		char algstr[DNS_SECALG_FORMATSIZE];
-		dns_secalg_format(alg, algstr, sizeof(algstr));
+		char algstr[DST_ALG_FORMATSIZE];
+		dst_algorithm_format(alg, algstr, sizeof(algstr));
 		fprintf(stderr,
 			"WARNING: DNSKEY algorithm '%s' is deprecated. Please "
 			"migrate to another algorithm\n",
@@ -543,6 +546,7 @@ main(int argc, char **argv) {
 		flags |= DNS_KEYOWNER_ZONE; /* DNSKEY: name type ZONE */
 		flags |= kskflag;
 		flags |= revflag;
+		flags |= adtflag;
 	}
 
 	isc_buffer_init(&buf, filename, sizeof(filename) - 1);
@@ -553,9 +557,9 @@ main(int argc, char **argv) {
 
 	if (result != ISC_R_SUCCESS) {
 		char namestr[DNS_NAME_FORMATSIZE];
-		char algstr[DNS_SECALG_FORMATSIZE];
+		char algstr[DST_ALG_FORMATSIZE];
 		dns_name_format(name, namestr, sizeof(namestr));
-		dns_secalg_format(alg, algstr, sizeof(algstr));
+		dst_algorithm_format(alg, algstr, sizeof(algstr));
 		fatal("failed to get key %s/%s: %s", namestr, algstr,
 		      isc_result_totext(result));
 		UNREACHABLE();

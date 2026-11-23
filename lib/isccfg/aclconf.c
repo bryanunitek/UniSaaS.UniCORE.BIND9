@@ -27,6 +27,7 @@
 #include <dns/iptable.h>
 
 #include <isccfg/aclconf.h>
+#include <isccfg/clause.h>
 #include <isccfg/namedconf.h>
 
 #define LOOP_MAGIC ISC_MAGIC('L', 'O', 'O', 'P')
@@ -79,7 +80,7 @@ static isc_result_t
 get_acl_def(const cfg_obj_t *cctx, const char *name, const cfg_obj_t **ret) {
 	const cfg_obj_t *acls = NULL;
 
-	RETERR(cfg_map_get(cctx, "acl", &acls));
+	RETERR(cfg_map_get(cctx, CFG_CLAUSE_ACL, &acls));
 	CFG_LIST_FOREACH(acls, elt) {
 		const cfg_obj_t *acl = cfg_listelt_value(elt);
 		const char *aclname =
@@ -153,15 +154,14 @@ convert_keyname(const cfg_obj_t *keyobj, isc_mem_t *mctx, dns_name_t *dnsname) {
 	isc_buffer_constinit(&buf, txtname, keylen);
 	isc_buffer_add(&buf, keylen);
 	dns_fixedname_init(&fixname);
-	result = dns_name_fromtext(dns_fixedname_name(&fixname), &buf,
-				   dns_rootname, 0);
+	result = dns_name_fromtext(dns_name(&fixname), &buf, dns_rootname, 0);
 	if (result != ISC_R_SUCCESS) {
 		cfg_obj_log(keyobj, ISC_LOG_WARNING,
 			    "key name '%s' is not a valid domain name",
 			    txtname);
 		return result;
 	}
-	dns_name_dup(dns_fixedname_name(&fixname), mctx, dnsname);
+	dns_name_dup(&fixname, mctx, dnsname);
 	return ISC_R_SUCCESS;
 }
 

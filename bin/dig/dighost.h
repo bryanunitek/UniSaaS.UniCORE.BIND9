@@ -104,9 +104,9 @@ struct dig_lookup {
 	unsigned int magic;
 	isc_refcount_t references;
 	bool aaonly, adflag, badcookie, besteffort, cdflag, cleared, coflag,
-		comments, dns64prefix, dnssec, doing_xfr, done_as_is, ednsneg,
-		expandaaaa, svcparamkeycompat, expire, fuzzing, header_only,
-		identify, /*%< Append an "on server <foo>" message */
+		comments, dns64prefix, deflag, dnssec, doing_xfr, done_as_is,
+		ednsneg, expandaaaa, svcparamkeycompat, expire, fuzzing,
+		header_only, identify,	/*%< Append "on server <foo>" message */
 		identify_previous_line, /*% Prepend a "Nameserver <foo>:"
 					   message, with newline and tab */
 		idnin, idnout, ignore, multiline, need_search, new_search,
@@ -135,10 +135,9 @@ struct dig_lookup {
 	char oname_space[BUFSIZE];
 	isc_buffer_t renderbuf;
 	char *sendspace;
-	dns_name_t *name;
+	dns_linkedname_t *name;
 	isc_interval_t interval;
 	dns_message_t *sendmsg;
-	dns_name_t *oname;
 	ISC_LINK(dig_lookup_t) link;
 	ISC_LIST(dig_query_t) q;
 	ISC_LIST(dig_query_t) connecting;

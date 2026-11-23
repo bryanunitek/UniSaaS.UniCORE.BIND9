@@ -66,12 +66,9 @@ struct named_server {
 	dns_keystorelist_t keystorelist;
 	ns_interfacemgr_t *interfacemgr;
 
-	isc_timer_t *interface_timer;
 	isc_timer_t *heartbeat_timer;
 	isc_timer_t *pps_timer;
 	isc_timer_t *tat_timer;
-
-	uint32_t interface_interval;
 
 	atomic_int reload_status;
 
@@ -126,6 +123,15 @@ void
 named_server_destroy(named_server_t **serverp);
 /*%<
  * Destroy a server object, freeing its memory.
+ */
+
+isc_result_t
+named_server_applyzones(named_server_t *server,
+			isc_result_t (*action)(dns_zone_t *, void *),
+			void *arg);
+/*%<
+ * Apply 'action' to every active zone owned by the server's current views,
+ * including raw, managed-keys, and redirect zones.
  */
 
 void
@@ -417,4 +423,4 @@ named_server_getmemprof(void);
 isc_result_t
 named_register_one_plugin(const cfg_obj_t *config, const cfg_obj_t *obj,
 			  cfg_aclconfctx_t *aclctx, const char *plugin_path,
-			  const char *parameters, void *callback_data);
+			  const cfg_token_t *parameters, void *callback_data);

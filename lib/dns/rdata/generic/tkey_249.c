@@ -23,8 +23,6 @@ fromtext_tkey(ARGS_FROMTEXT) {
 	isc_token_t token;
 	dns_rcode_t rcode;
 	isc_buffer_t buffer;
-	long i;
-	char *e;
 
 	REQUIRE(type == dns_rdatatype_tkey);
 
@@ -75,14 +73,7 @@ fromtext_tkey(ARGS_FROMTEXT) {
 	if (dns_tsigrcode_fromtext(&rcode, &token.value.as_textregion) !=
 	    ISC_R_SUCCESS)
 	{
-		i = strtol(DNS_AS_STR(token), &e, 10);
-		if (*e != 0) {
-			RETTOK(DNS_R_UNKNOWN);
-		}
-		if (i < 0 || i > 0xffff) {
-			RETTOK(ISC_R_RANGE);
-		}
-		rcode = (dns_rcode_t)i;
+		RETTOK(isc_parse_uint16(&rcode, DNS_AS_STR(token), 10));
 	}
 	RETERR(uint16_tobuffer(rcode, target));
 
@@ -299,27 +290,6 @@ fromwire_tkey(ARGS_FROMWIRE) {
 	}
 	isc_buffer_forward(source, n + 2);
 	return mem_tobuffer(target, sr.base, n + 2);
-}
-
-static isc_result_t
-towire_tkey(ARGS_TOWIRE) {
-	isc_region_t sr;
-	dns_name_t name;
-
-	REQUIRE(rdata->type == dns_rdatatype_tkey);
-	REQUIRE(rdata->length != 0);
-
-	dns_compress_setpermitted(cctx, false);
-	/*
-	 * Algorithm.
-	 */
-	dns_rdata_toregion(rdata, &sr);
-	dns_name_init(&name);
-	dns_name_fromregion(&name, &sr);
-	RETERR(dns_name_towire(&name, cctx, target));
-	isc_region_consume(&sr, name_length(&name));
-
-	return mem_tobuffer(target, sr.base, sr.length);
 }
 
 static int

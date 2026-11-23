@@ -27,7 +27,7 @@ import pytest
 
 from isctest.algorithms import ECDSAP256SHA256, ECDSAP384SHA384, Algorithm
 from isctest.kasp import KeyProperties, KeyTimingMetadata, SettimeOptions
-from isctest.util import param
+from isctest.util import newer_mtime, param
 
 import isctest
 import isctest.mark
@@ -149,14 +149,14 @@ KASP_INHERIT_TSIG_SECRET = {
 
 def autosign_properties(algorithm: Algorithm):
     return [
-        f"ksk {lifetime['P2Y']} {algorithm.number} {algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent",
+        f"ksk {lifetime['P2Y']} {algorithm.number} {algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent sep",
         f"zsk {lifetime['P1Y']} {algorithm.number} {algorithm.bits} goal:omnipresent dnskey:omnipresent zrrsig:omnipresent",
     ]
 
 
 def rsa1_properties(alg):
     return [
-        f"ksk {lifetime['P10Y']} {alg} 2048 goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+        f"ksk {lifetime['P10Y']} {alg} 2048 goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
         f"zsk {lifetime['P5Y']} {alg} 2048 goal:omnipresent dnskey:rumoured zrrsig:rumoured",
         f"zsk {lifetime['P1Y']} {alg} 2000 goal:omnipresent dnskey:rumoured zrrsig:rumoured",
     ]
@@ -168,7 +168,7 @@ def fips_properties(alg, bits=None):
         sizes = [bits, bits, bits]
 
     return [
-        f"ksk {lifetime['P10Y']} {alg} {sizes[0]} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+        f"ksk {lifetime['P10Y']} {alg} {sizes[0]} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
         f"zsk {lifetime['P5Y']} {alg} {sizes[1]} goal:omnipresent dnskey:rumoured zrrsig:rumoured",
         f"zsk {lifetime['P1Y']} {alg} {sizes[2]} goal:omnipresent dnskey:rumoured zrrsig:rumoured",
     ]
@@ -224,7 +224,8 @@ def cb_ixfr_is_signed(expected_updates, params, ksks=None, zsks=None):
     isctest.log.debug(
         f"expected updates {expected_updates} policy {policy} ksks {ksks} zsks {zsks}"
     )
-    shutil.copyfile(f"ns2/{zone}.db.in2", f"ns2/{zone}.db")
+    with newer_mtime(f"ns2/{zone}.db"):
+        shutil.copyfile(f"ns2/{zone}.db.in2", f"ns2/{zone}.db")
     servers["ns2"].rndc(f"reload {zone}")
 
     def update_is_signed():
@@ -233,7 +234,7 @@ def cb_ixfr_is_signed(expected_updates, params, ksks=None, zsks=None):
         qtype = dns.rdatatype.from_text(parts[1])
         rdata = parts[2]
         return isctest.kasp.verify_update_is_signed(
-            servers["ns3"], zone, qname, qtype, rdata, ksks, zsks
+            servers["ns3"], qname, qtype, rdata, ksks, zsks
         )
 
     for update in expected_updates:
@@ -455,7 +456,7 @@ def cb_remove_keyfiles(params, ksks=None, zsks=None):
                 "config": autosign_config,
                 "offset": -timedelta(days=30 * 6),
                 "key-properties": [
-                    f"ksk 63072000 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent missing",
+                    f"ksk 63072000 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent sep missing",
                     f"zsk 31536000 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:omnipresent zrrsig:omnipresent",
                 ],
             },
@@ -468,7 +469,7 @@ def cb_remove_keyfiles(params, ksks=None, zsks=None):
                 "config": autosign_config,
                 "offset": -timedelta(days=30 * 6),
                 "key-properties": [
-                    f"ksk 63072000 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent",
+                    f"ksk 63072000 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent sep",
                     f"zsk 31536000 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:omnipresent zrrsig:omnipresent missing",
                 ],
             },
@@ -528,7 +529,7 @@ def cb_remove_keyfiles(params, ksks=None, zsks=None):
                 },
                 "key-directories": ["{keydir}/ksk", "{keydir}/zsk"],
                 "key-properties": [
-                    f"ksk unlimited {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+                    f"ksk unlimited {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
                     f"zsk unlimited {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured zrrsig:rumoured",
                 ],
             },
@@ -541,7 +542,7 @@ def cb_remove_keyfiles(params, ksks=None, zsks=None):
                 "config": kasp_config,
                 "pregenerated": True,
                 "key-properties": [
-                    "ksk 16070400 8 2048 goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+                    "ksk 16070400 8 2048 goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
                     "zsk 16070400 8 2048 goal:omnipresent dnskey:rumoured zrrsig:rumoured",
                 ],
                 "additional-tests": [
@@ -630,7 +631,7 @@ def cb_remove_keyfiles(params, ksks=None, zsks=None):
                 "policy": "unlimited",
                 "config": kasp_config,
                 "key-properties": [
-                    f"csk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden",
+                    f"csk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden sep",
                 ],
             },
             id="unlimited.kasp",
@@ -654,6 +655,31 @@ def cb_remove_keyfiles(params, ksks=None, zsks=None):
             },
             id="ed448.kasp",
             marks=isctest.mark.with_algorithm("ED448"),
+        ),
+        pytest.param(
+            {
+                "zone": "adt.kasp",
+                "policy": "adt",
+                "config": kasp_config,
+                "key-properties": [
+                    f"ksk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep adt",
+                    f"zsk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured zrrsig:rumoured",
+                ],
+            },
+            id="adt.kasp",
+        ),
+        pytest.param(
+            {
+                "zone": "crazy-flags.kasp",
+                "policy": "crazy-flags",
+                "config": kasp_config,
+                "key-properties": [
+                    f"ksk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+                    f"zsk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured zrrsig:rumoured sep",
+                    f"zsk 0 {Algorithm.default().number} {Algorithm.default().bits} goal:omnipresent dnskey:rumoured zrrsig:rumoured adt",
+                ],
+            },
+            id="crazy-flags.kasp",
         ),
     ],
 )
@@ -825,7 +851,6 @@ def test_kasp_inherit_view(number, dynamic, inline_signing, txt_rdata, ns4):
     assert f"dynamic: {dynamic}" in response.out
     assert f"inline signing: {inline_signing}" in response.out
     # check subdomain
-    fqdn = f"{zone}."
     qname = f"view.{zone}."
     qtype = dns.rdatatype.TXT
     rdata = txt_rdata
@@ -840,6 +865,7 @@ def test_kasp_inherit_view(number, dynamic, inline_signing, txt_rdata, ns4):
         response = None
     assert response.rcode() == dns.rcode.NOERROR
     match = f'{qname} 300 IN TXT "{rdata}"'
+    rrs = []
     rrsigs = []
     for rrset in response.answer:
         if rrset.match(
@@ -848,8 +874,9 @@ def test_kasp_inherit_view(number, dynamic, inline_signing, txt_rdata, ns4):
             rrsigs.append(rrset)
         else:
             assert match in rrset.to_text()
+            rrs.append(rrset)
     assert len(rrsigs) > 0
-    isctest.kasp.check_signatures(rrsigs, qtype, fqdn, keys, [])
+    isctest.kasp.check_signatures(rrs, rrsigs, qtype, keys, [])
 
 
 def test_kasp_default(ns3):
@@ -863,7 +890,7 @@ def test_kasp_default(ns3):
     # Key properties.
     # DNSKEY, RRSIG (ksk), RRSIG (zsk) are published. DS needs to wait.
     keyprops = [
-        "csk 0 13 256 goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden",
+        "csk 0 13 256 goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden sep",
     ]
     expected = isctest.kasp.policy_to_properties(ttl=3600, keys=keyprops)
     keys = isctest.kasp.keydir_to_keylist(zone, "ns3")
@@ -902,7 +929,8 @@ def test_kasp_default(ns3):
 
     # modify unsigned zone file and check that new record is signed.
     isctest.log.info("check that an updated zone signs the new record")
-    shutil.copyfile("ns3/template2.db.in", f"ns3/{zone}.db")
+    with newer_mtime(f"ns3/{zone}.db"):
+        shutil.copyfile("ns3/template2.db.in", f"ns3/{zone}.db")
     ns3.rndc(f"reload {zone}")
 
     def update_is_signed():
@@ -910,9 +938,7 @@ def test_kasp_default(ns3):
         qname = parts[0]
         qtype = dns.rdatatype.from_text(parts[1])
         rdata = parts[2]
-        return isctest.kasp.verify_update_is_signed(
-            ns3, zone, qname, qtype, rdata, keys, []
-        )
+        return isctest.kasp.verify_update_is_signed(ns3, qname, qtype, rdata, keys, [])
 
     expected_updates = [f"a.{zone}. A 10.0.0.11", f"d.{zone}. A 10.0.0.44"]
     for update in expected_updates:
@@ -961,7 +987,7 @@ def test_kasp_uppercase(ns3):
     # Key properties.
     # DNSKEY, RRSIG (ksk), RRSIG (zsk) are published. DS needs to wait.
     keyprops = [
-        "csk 0 13 256 goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden",
+        "csk 0 13 256 goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden sep",
     ]
     expected = isctest.kasp.policy_to_properties(ttl=3600, keys=keyprops)
     keys = isctest.kasp.keydir_to_keylist(zone, "ns3")
@@ -1010,9 +1036,7 @@ def test_kasp_dynamic(ns3):
         qname = parts[0]
         qtype = dns.rdatatype.from_text(parts[1])
         rdata = parts[2]
-        return isctest.kasp.verify_update_is_signed(
-            ns3, zone, qname, qtype, rdata, keys, []
-        )
+        return isctest.kasp.verify_update_is_signed(ns3, qname, qtype, rdata, keys, [])
 
     update_msg = dns.update.UpdateMessage(zone)
     update_msg.delete(f"a.{zone}.", "A", "10.0.0.1")
@@ -1118,7 +1142,7 @@ def test_kasp_cds_cdnskey(ns3, default_algorithm):
     zone = "cds-cdnskey.kasp"
     policy = "cds-cdnskey"
     policy_keys = [
-        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:rumoured",
+        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:rumoured sep",
         f"zsk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent zrrsig:omnipresent",
     ]
 
@@ -1159,7 +1183,7 @@ def test_kasp_checkds(ns3, default_algorithm):
     zone = "checkds-ksk.kasp"
     policy = "checkds-ksk"
     policy_keys = [
-        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
         f"zsk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured zrrsig:rumoured",
     ]
 
@@ -1201,8 +1225,8 @@ def test_kasp_checkds_doubleksk(ns3, default_algorithm):
     zone = "checkds-doubleksk.kasp"
     policy = "checkds-doubleksk"
     policy_keys = [
-        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
-        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden",
+        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
+        f"ksk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured ds:hidden sep",
         f"zsk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured zrrsig:rumoured",
     ]
 
@@ -1273,7 +1297,7 @@ def test_kasp_checkds_csk(ns3, default_algorithm):
     zone = "checkds-csk.kasp"
     policy = "checkds-csk"
     policy_keys = [
-        f"csk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden",
+        f"csk unlimited {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured krrsig:rumoured zrrsig:rumoured ds:hidden sep",
     ]
 
     isctest.kasp.wait_keymgr_done(ns3, zone)
@@ -1372,10 +1396,10 @@ def test_kasp_dnssec_keygen():
     )
 
     keyprops = [
-        f"csk {lifetime['P1Y']} 13 256",
-        f"ksk {lifetime['P1Y']} 8 2048",
+        f"csk {lifetime['P1Y']} 13 256 sep",
+        f"ksk {lifetime['P1Y']} 8 2048 sep",
         f"zsk {lifetime['P30D']} 8 2048",
-        f"zsk {lifetime['P6M']} 8 3072",
+        f"zsk {lifetime['P6M']} 8 3072 adt",
     ]
     keydir = "keys"
     out = keygen("kasp", "kasp", keydir)
@@ -1387,7 +1411,7 @@ def test_kasp_dnssec_keygen():
         "check that 'dnssec-keygen -k' (default policy) created valid files"
     )
 
-    keyprops = ["csk 0 13 256"]
+    keyprops = ["csk 0 13 256 sep"]
     out = keygen("kasp", "default")
     keys = isctest.kasp.keystr_to_keylist(out)
     expected = isctest.kasp.policy_to_properties(ttl=3600, keys=keyprops)
@@ -1422,7 +1446,7 @@ def test_kasp_dnssec_keygen():
     zrrsig = "omnipresent"
     ds = "hidden"
     keyprops = [
-        f"csk 0 13 256 goal:{goal} dnskey:{dnskey} krrsig:{krrsig} zrrsig:{zrrsig} ds:{ds}",
+        f"csk 0 13 256 goal:{goal} dnskey:{dnskey} krrsig:{krrsig} zrrsig:{zrrsig} ds:{ds} sep",
     ]
     expected = isctest.kasp.policy_to_properties(ttl=3600, keys=keyprops)
     expected[0].timing = {
@@ -1453,7 +1477,7 @@ def test_kasp_dnssec_keygen():
     )
 
     now = KeyTimingMetadata.now()
-    keyprops = ["csk 0 13 256"]
+    keyprops = ["csk 0 13 256 sep"]
     expected = isctest.kasp.policy_to_properties(ttl=3600, keys=keyprops)
     expected[0].timing = {
         "Generated": created,
@@ -1484,7 +1508,7 @@ def test_kasp_dnssec_keygen():
     zrrsig = "unretentive"
     ds = "omnipresent"
     keyprops = [
-        f"csk 0 13 256 goal:{goal} dnskey:{dnskey} krrsig:{krrsig} zrrsig:{zrrsig} ds:{ds}",
+        f"csk 0 13 256 goal:{goal} dnskey:{dnskey} krrsig:{krrsig} zrrsig:{zrrsig} ds:{ds} sep",
     ]
     expected = isctest.kasp.policy_to_properties(ttl=3600, keys=keyprops)
     expected[0].timing = {
@@ -1526,7 +1550,7 @@ def test_kasp_zsk_retired(ns3, default_algorithm):
     zone = "zsk-retired.autosign"
     policy = "autosign"
     key_properties = [
-        f"ksk 63072000 {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent",
+        f"ksk 63072000 {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent sep",
         # zsk predecessor
         f"zsk 31536000 {default_algorithm.number} {default_algorithm.bits} goal:hidden dnskey:omnipresent zrrsig:omnipresent",
         # zsk successor
@@ -1705,7 +1729,8 @@ def test_kasp_reload_restart(ns6):
     soa1, ttl1 = query_soa(zone)
     assert ttl1 == 300
 
-    shutil.copyfile(f"ns6/{zone}2.db.in", f"ns6/{zone}.db")
+    with newer_mtime(f"ns6/{zone}.db"):
+        shutil.copyfile(f"ns6/{zone}2.db.in", f"ns6/{zone}.db")
     with ns6.watch_log_from_here() as watcher:
         ns6.rndc("reload")
         watcher.wait_for_line("all zones loaded")
@@ -1737,7 +1762,7 @@ def test_kasp_manual_mode(ns3, default_algorithm):
     ttl = int(autosign_config["dnskey-ttl"].total_seconds())
     offset = -timedelta(days=30 * 6)
     keyprops = [
-        f"ksk {lifetime['P2Y']} {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent",
+        f"ksk {lifetime['P2Y']} {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent sep",
         f"zsk {lifetime['P2M']} {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent zrrsig:omnipresent",
     ]
 
@@ -1813,7 +1838,7 @@ def test_kasp_manual_mode(ns3, default_algorithm):
 
     # Check keys again, make sure the rollover has started.
     keyprops = [
-        f"ksk {lifetime['P2Y']} {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent",
+        f"ksk {lifetime['P2Y']} {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:omnipresent krrsig:omnipresent ds:omnipresent sep",
         f"zsk {lifetime['P2M']} {default_algorithm.number} {default_algorithm.bits} goal:hidden dnskey:omnipresent zrrsig:omnipresent",
         f"zsk {lifetime['P2M']} {default_algorithm.number} {default_algorithm.bits} goal:omnipresent dnskey:rumoured zrrsig:hidden",
     ]
@@ -1844,7 +1869,7 @@ def test_root_case(ns1):
 
     # Check key properties. DS is expected to go to rumoured, so checkds kicks in.
     keyprops = [
-        "csk 0 13 256 goal:omnipresent dnskey:omnipresent krrsig:omnipresent zrrsig:omnipresent ds:rumoured",
+        "csk 0 13 256 goal:omnipresent dnskey:omnipresent krrsig:omnipresent zrrsig:omnipresent ds:rumoured sep",
     ]
     expected = isctest.kasp.policy_to_properties(ttl=ttl, keys=keyprops)
     keys = isctest.kasp.keydir_to_keylist(zone, keydir)

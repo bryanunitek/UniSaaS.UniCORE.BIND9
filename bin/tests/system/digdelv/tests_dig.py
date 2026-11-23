@@ -364,7 +364,7 @@ def test_nocrypto(dig, ns1):
     """
     alg_num = os.environ["DEFAULT_ALGORITHM_NUMBER"]
     result = dig(f"+dnssec +norec +nocrypto DNSKEY . @{ns1.ip}")
-    assert Re(rf"256 \d+ {alg_num} \[key id = [1-9]\d*]") in result.out
+    assert Re(rf"256 \d+ {alg_num} \[key id = \d+]") in result.out
     assert Re(r"RRSIG.* \[omitted]") in result.out
     result = dig(f"+norec +nocrypto DS example @{ns1.ip}")
     assert Re(r"DS.* \d+ [12] \[omitted]") in result.out
@@ -429,7 +429,7 @@ def test_nxname_returns_formerr(dig, ns3):
     checking dig NXNAME returns FORMERR.
     """
     result = dig(f"@{ns3.ip} +qr NXNAME a.example")
-    assert Re(r"^; EDE: 30: \(Invalid Query Type\)") in result.out
+    assert Re(r"^; EDE: 30 \(Invalid Query Type\)") in result.out
     assert Re(r"^;a\.example\.\s+IN\sNXNAME$") in result.out
     assert "FORMERR" in result.out
 
@@ -649,8 +649,12 @@ def test_keepalive_yaml(dig, ns1):
     "payload,expected",
     [
         param("ede:0000666f6f", "; EDE: 0 (Other): (foo)", id="first-defined-code"),
-        param("ede:0018", "; EDE: 24 (Invalid Data)", id="last-defined-code"),
-        param("ede:0019666f6f", "; EDE: 25: (foo)", id="undefined-code"),
+        param(
+            "ede:0023",
+            "; EDE: 35 (Blocked by Upstream DNS Server)",
+            id="last-defined-code",
+        ),
+        param("ede:0040666f6f", "; EDE: 64: (foo)", id="undefined-code"),
         param("ede", "; EDE:", id="empty"),
         param("ede:00", '; EDE: 00 (".")', id="too-short"),
     ],
@@ -668,8 +672,13 @@ def test_ednsopt_ede(dig, ns3, payload, expected):
     "payload,info_code,extra_text",
     [
         param("ede:0000666f6f", "0 (Other)", "foo", id="first-defined-code"),
-        param("ede:0018", "24 (Invalid Data)", None, id="last-defined-code"),
-        param("ede:0019666f6f", 25, "foo", id="undefined-code"),
+        param(
+            "ede:0023",
+            "35 (Blocked by Upstream DNS Server)",
+            None,
+            id="last-defined-code",
+        ),
+        param("ede:0040666f6f", 64, "foo", id="undefined-code"),
     ],
 )
 def test_ednsopt_ede_yaml(dig, ns3, payload, info_code, extra_text):
@@ -1261,3 +1270,13 @@ def test_yaml_character_values(dig, ns3):
     answer = response["ANSWER_SECTION"][0]
     strings = " ".join(quoted(i) for i in range(256))
     assert answer == f"all.yaml.example. 300 IN TXT {strings}"
+
+
+def test_deflag(dig, ns3):
+    """
+    Check that the DE flag is sent when specified.
+    """
+    result = dig(f"@{ns3.ip} +de a.example +qr")
+    assert "flags: de" in result.out
+    result = dig(f"@{ns3.ip} a.example +qr")
+    assert "flags: de" not in result.out

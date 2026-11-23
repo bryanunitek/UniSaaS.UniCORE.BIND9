@@ -26,6 +26,7 @@
 #include <isc/hex.h>
 #include <isc/mem.h>
 #include <isc/once.h>
+#include <isc/parseint.h>
 #include <isc/random.h>
 #include <isc/result.h>
 #include <isc/string.h>
@@ -131,7 +132,7 @@ dns_name_hasbuffer(const dns_name_t *name) {
 }
 
 bool
-dns_name_isabsolute(const dns_name_t *name) {
+dns_name__isabsolute(const dns_name_t *name) {
 	/*
 	 * Does 'name' end in the root label?
 	 */
@@ -255,7 +256,7 @@ dns_name_ishostname(const dns_name_t *name, bool wildcard) {
 }
 
 bool
-dns_name_iswildcard(const dns_name_t *name) {
+dns_name__iswildcard(const dns_name_t *name) {
 	unsigned char *ndata;
 
 	/*
@@ -276,7 +277,7 @@ dns_name_iswildcard(const dns_name_t *name) {
 }
 
 bool
-dns_name_internalwildcard(const dns_name_t *name) {
+dns_name__internalwildcard(const dns_name_t *name) {
 	unsigned char *ndata;
 	unsigned int count;
 	unsigned int label;
@@ -310,16 +311,27 @@ dns_name_internalwildcard(const dns_name_t *name) {
 	return false;
 }
 
-uint32_t
-dns_name_hash(const dns_name_t *name) {
+void
+dns_name_hash_ex(isc_hash32_t *hash, const dns_name_t *name) {
 	REQUIRE(DNS_NAME_VALID(name));
 
-	return isc_hash32(name->ndata, name->length, false);
+	isc_hash32_hash(hash, name->ndata, name->length, false);
+}
+
+uint32_t
+dns_name__hash(const dns_name_t *name) {
+	isc_hash32_t hash;
+
+	isc_hash32_init(&hash);
+
+	dns_name_hash_ex(&hash, name);
+
+	return isc_hash32_finalize(&hash);
 }
 
 dns_namereln_t
-dns_name_fullcompare(const dns_name_t *name1, const dns_name_t *name2,
-		     int *orderp, unsigned int *nlabelsp) {
+dns_name__fullcompare(const dns_name_t *name1, const dns_name_t *name2,
+		      int *orderp, unsigned int *nlabelsp) {
 	unsigned int l1, l2, l, count1, count2, count, nlabels;
 	int cdiff, ldiff, diff;
 	unsigned char *label1, *label2;
@@ -414,7 +426,7 @@ done:
 }
 
 int
-dns_name_compare(const dns_name_t *name1, const dns_name_t *name2) {
+dns_name__compare(const dns_name_t *name1, const dns_name_t *name2) {
 	int order;
 	unsigned int nlabels;
 
@@ -434,7 +446,7 @@ dns_name_compare(const dns_name_t *name1, const dns_name_t *name2) {
 }
 
 bool
-dns_name_equal(const dns_name_t *name1, const dns_name_t *name2) {
+dns_name__equal(const dns_name_t *name1, const dns_name_t *name2) {
 	unsigned int length;
 
 	/*
@@ -514,7 +526,7 @@ dns_name_rdatacompare(const dns_name_t *name1, const dns_name_t *name2) {
 }
 
 bool
-dns_name_issubdomain(const dns_name_t *name1, const dns_name_t *name2) {
+dns_name__issubdomain(const dns_name_t *name1, const dns_name_t *name2) {
 	int order;
 	unsigned int nlabels;
 	dns_namereln_t namereln;
@@ -636,7 +648,7 @@ dns_name_getlabelsequence(const dns_name_t *source, unsigned int first,
 }
 
 void
-dns_name_clone(const dns_name_t *source, dns_name_t *target) {
+dns_name__clone(const dns_name_t *source, dns_name_t *target) {
 	/*
 	 * Make 'target' refer to the same name as 'source'.
 	 */
@@ -972,8 +984,8 @@ dns_name_fromtext(dns_name_t *name, isc_buffer_t *source,
 }
 
 isc_result_t
-dns_name_totext(const dns_name_t *name, unsigned int options,
-		isc_buffer_t *target) {
+dns_name__totext(const dns_name_t *name, unsigned int options,
+		 isc_buffer_t *target) {
 	isc_result_t result;
 	unsigned char *ndata = NULL;
 	unsigned int nlen;
@@ -1635,7 +1647,7 @@ dns_name_concatenate(const dns_name_t *prefix, const dns_name_t *suffix,
 }
 
 void
-dns_name_dup(const dns_name_t *source, isc_mem_t *mctx, dns_name_t *target) {
+dns_name__dup(const dns_name_t *source, isc_mem_t *mctx, dns_name_t *target) {
 	/*
 	 * Make 'target' a dynamically allocated copy of 'source'.
 	 */
@@ -1671,7 +1683,7 @@ dns_name_free(dns_name_t *name, isc_mem_t *mctx) {
 }
 
 size_t
-dns_name_size(const dns_name_t *name) {
+dns_name__size(const dns_name_t *name) {
 	size_t size;
 
 	REQUIRE(DNS_NAME_VALID(name));
@@ -1705,7 +1717,7 @@ dns_name_digest(const dns_name_t *name, dns_digestfunc_t digest, void *arg) {
 }
 
 bool
-dns_name_dynamic(const dns_name_t *name) {
+dns_name__dynamic(const dns_name_t *name) {
 	REQUIRE(DNS_NAME_VALID(name));
 
 	/*
@@ -1756,7 +1768,7 @@ dns_name_settotextfilter(dns_name_totextfilter_t *proc) {
 }
 
 void
-dns_name_format(const dns_name_t *name, char *cp, unsigned int size) {
+dns_name__format(const dns_name_t *name, char *cp, unsigned int size) {
 	isc_result_t result;
 	isc_buffer_t buf;
 
@@ -1827,7 +1839,7 @@ dns_name_fromstring(dns_name_t *target, const char *src,
 }
 
 void
-dns_name_copy(const dns_name_t *source, dns_name_t *dest) {
+dns_name__copy(const dns_name_t *source, dns_name_t *dest) {
 	isc_buffer_t *target = NULL;
 	unsigned char *ndata = NULL;
 
@@ -1966,7 +1978,7 @@ dns_name_isula(const dns_name_t *name) {
 }
 
 bool
-dns_name_istat(const dns_name_t *name) {
+dns_name__istat(const dns_name_t *name) {
 	unsigned char len;
 	const unsigned char *ndata;
 
@@ -2015,6 +2027,7 @@ bool
 dns_name_isdnssvcb(const dns_name_t *name) {
 	unsigned char len, len1;
 	const unsigned char *ndata;
+	isc_result_t result;
 
 	REQUIRE(DNS_NAME_VALID(name));
 
@@ -2032,8 +2045,7 @@ dns_name_isdnssvcb(const dns_name_t *name) {
 	}
 	if (isdigit(ndata[1]) && name->length > len + 1) {
 		char buf[sizeof("65000")];
-		long port;
-		char *endp;
+		uint16_t port;
 
 		/*
 		 * Do we have a valid _port label?
@@ -2043,8 +2055,8 @@ dns_name_isdnssvcb(const dns_name_t *name) {
 		}
 		memcpy(buf, ndata + 1, len - 1);
 		buf[len - 1] = 0;
-		port = strtol(buf, &endp, 10);
-		if (*endp != 0 || port < 0 || port > 0xffff) {
+		result = isc_parse_uint16(&port, buf, 10);
+		if (result != ISC_R_SUCCESS) {
 			return false;
 		}
 
@@ -2067,11 +2079,13 @@ dns_name_isdnssvcb(const dns_name_t *name) {
 }
 
 bool
-dns_name_israd(const dns_name_t *name, const dns_name_t *rad) {
+dns_name__israd(const dns_name_t *name, const dns_name_t *rad) {
 	dns_name_t suffix;
 	char labelbuf[64];
+	isc_result_t result;
 	unsigned long v, last = ULONG_MAX;
 	char *end, *l;
+	uint64_t u64;
 
 	REQUIRE(DNS_NAME_VALID(name));
 	REQUIRE(DNS_NAME_VALID(rad));
@@ -2129,8 +2143,9 @@ dns_name_israd(const dns_name_t *name, const dns_name_t *rad) {
 	if (strlen(labelbuf) != *suffix.ndata) {
 		return false;
 	}
-	v = strtoul(labelbuf, &end, 10);
-	if (v > 0xfff || *end != 0) {
+
+	result = isc_parse_unsigned_number(&u64, labelbuf, 10);
+	if (result != ISC_R_SUCCESS || u64 > 0xfff) {
 		return false;
 	}
 

@@ -19,6 +19,7 @@ import glob
 import os
 import re
 
+import dns.dnssec
 import dns.exception
 import dns.message
 import dns.name
@@ -36,6 +37,10 @@ from isctest.zone import FileZoneKey
 import isctest.log
 import isctest.query
 import isctest.util
+
+KEYFLAG_ZONE = 1 << 8
+KEYFLAG_ADT = 1 << 1
+KEYFLAG_SEP = 1 << 0
 
 DEFAULT_TTL = 300
 
@@ -186,7 +191,7 @@ class KeyProperties:
         legacy: bool = False,
         role: str = "csk",
         ttl: int = 3600,
-        flags: int = 257,
+        flags: int = KEYFLAG_SEP | KEYFLAG_ZONE,
         keytag_min: int = 0,
         keytag_max: int = 65535,
         offset: timedelta | int = 0,
@@ -235,9 +240,9 @@ class KeyProperties:
         return result
 
     def role_full(self) -> str:
-        if self.flags == 256:
-            return "zone-signing"
-        return "key-signing"
+        if (self.flags & KEYFLAG_SEP) != 0:
+            return "key-signing"
+        return "zone-signing"
 
     def Ipub(self, config):
         ipub = timedelta(0)
@@ -919,13 +924,27 @@ def check_dnssecstatus(server, zone, keys, policy=None, view=None, verbose=False
 
     for key in keys:
         if not key.external:
-            assert f"{key.role()} {key.tag}" in response.out
+            assert Re(rf"^{key.role()} {key.tag} \(") in response.out
+
+
+def _signed_by(rrset, rrsig, dnskey) -> bool:
+    """
+    Check that 'rrsig' over 'rrset' was made with the key in 'dnskey'. The key
+    tag alone cannot tell, as tags of distinct keys may collide.
+    """
+    try:
+        dns.dnssec.validate_rrsig(
+            rrset, rrsig, {dnskey.name: dnskey}, now=rrsig.inception
+        )
+    except dns.dnssec.ValidationFailure:
+        return False
+    return True
 
 
 def _check_signatures(
+    rrset,
     signatures,
     covers,
-    fqdn,
     keys,
     offline_ksk=False,
     zsk_missing=False,
@@ -935,9 +954,6 @@ def _check_signatures(
     zrrsig = True
     if covers in [dns.rdatatype.DNSKEY, dns.rdatatype.CDNSKEY, dns.rdatatype.CDS]:
         zrrsig = False
-    krrsig = not zrrsig
-
-    signer = fqdn.lower()
 
     for key in keys:
         if key.external:
@@ -946,70 +962,53 @@ def _check_signatures(
         ksigning, zsigning = key.get_signing_state(
             offline_ksk=offline_ksk, zsk_missing=zsk_missing, smooth=smooth
         )
+        signing = zsigning if zrrsig else ksigning
 
-        alg = key.algorithm.number
-        rtype = dns.rdatatype.to_text(covers)
+        dnskey = key.dnskey
+        has_rrsig = rrset is not None and any(
+            _signed_by(rrset, rrsig, dnskey) for rrsig in signatures
+        )
 
-        expect = rf"IN RRSIG {rtype} {alg} (\d) (\d+) (\d+) (\d+) {key.tag} {signer}"
-
-        if zrrsig and zsigning:
-            has_rrsig = False
-            for rrsig in signatures:
-                if re.search(expect, rrsig) is not None:
-                    has_rrsig = True
-                    break
-            assert has_rrsig, f"Expected signature but not found: {expect}"
+        if signing:
+            assert has_rrsig, f"Expected signature by {key} not found"
             numsigs += 1
-
-        if zrrsig and not zsigning:
-            for rrsig in signatures:
-                assert re.search(expect, rrsig) is None
-
-        if krrsig and ksigning:
-            has_rrsig = False
-            for rrsig in signatures:
-                if re.search(expect, rrsig) is not None:
-                    has_rrsig = True
-                    break
-            assert has_rrsig, f"Expected signature but not found: {expect}"
-            numsigs += 1
-
-        if krrsig and not ksigning:
-            for rrsig in signatures:
-                assert re.search(expect, rrsig) is None
+        else:
+            assert not has_rrsig, f"Unexpected signature by {key} found"
 
     return numsigs
 
 
 def check_signatures(
-    rrset, covers, fqdn, ksks, zsks, offline_ksk=False, zsk_missing=False, smooth=False
+    rrsets,
+    rrsigs,
+    covers,
+    ksks,
+    zsks,
+    offline_ksk=False,
+    zsk_missing=False,
+    smooth=False,
 ):
-    # Check if signatures with covering type are signed with the right keys.
-    # The right keys are the ones that expect a signature and have the
-    # correct role.
+    # Check if the signatures over the 'covers' RRset in 'rrsets' are signed
+    # with the right keys. The right keys are the ones that expect a signature
+    # and have the correct role.
+    assert len(rrsets) <= 1
+    rrset = rrsets[0] if rrsets else None
+    signatures = [rrsig for rr in rrsigs for rrsig in rr]
+
     numsigs = 0
-
-    signatures = []
-    for rr in rrset:
-        for rdata in rr:
-            rdclass = dns.rdataclass.to_text(rr.rdclass)
-            rdtype = dns.rdatatype.to_text(rr.rdtype)
-            rrsig = f"{rr.name} {rr.ttl} {rdclass} {rdtype} {rdata}"
-            signatures.append(rrsig)
-
     numsigs += _check_signatures(
+        rrset,
         signatures,
         covers,
-        fqdn,
         ksks,
         offline_ksk=offline_ksk,
         zsk_missing=zsk_missing,
         smooth=smooth,
     )
     numsigs += _check_signatures(
+        rrset,
         signatures,
         covers,
-        fqdn,
         zsks,
         offline_ksk=offline_ksk,
         zsk_missing=zsk_missing,
@@ -1206,7 +1205,7 @@ def check_apex(
     dnskeys, rrsigs = _query_rrset(server, fqdn, dns.rdatatype.DNSKEY, tsig=tsig)
     check_dnskeys(dnskeys, ksks, zsks, manual_mode=manual_mode)
     check_signatures(
-        rrsigs, dns.rdatatype.DNSKEY, fqdn, ksks, zsks, offline_ksk=offline_ksk
+        dnskeys, rrsigs, dns.rdatatype.DNSKEY, ksks, zsks, offline_ksk=offline_ksk
     )
 
     # test soa query
@@ -1214,9 +1213,9 @@ def check_apex(
     assert len(soa) == 1
     assert f"{zone}. {DEFAULT_TTL} IN SOA" in soa[0].to_text()
     check_signatures(
+        soa,
         rrsigs,
         dns.rdatatype.SOA,
-        fqdn,
         ksks,
         zsks,
         offline_ksk=offline_ksk,
@@ -1237,17 +1236,22 @@ def check_apex(
     if len(cdnskeys) > 0:
         assert len(rrsigs) > 0
         check_signatures(
-            rrsigs, dns.rdatatype.CDNSKEY, fqdn, ksks, zsks, offline_ksk=offline_ksk
+            cdnskeys,
+            rrsigs,
+            dns.rdatatype.CDNSKEY,
+            ksks,
+            zsks,
+            offline_ksk=offline_ksk,
         )
 
     # test cds query
-    cds, rrsigs = _query_rrset(server, fqdn, dns.rdatatype.CDS, tsig=tsig)
+    cdsrrsets, rrsigs = _query_rrset(server, fqdn, dns.rdatatype.CDS, tsig=tsig)
 
     if cds_delete:
-        check_cdsdelete(cds, "0 0 0 00")
+        check_cdsdelete(cdsrrsets, "0 0 0 00")
     else:
         cdsrrs = []
-        for rr in cds:
+        for rr in cdsrrsets:
             for rdata in rr:
                 rdclass = dns.rdataclass.to_text(rr.rdclass)
                 rdtype = dns.rdatatype.to_text(rr.rdtype)
@@ -1262,10 +1266,15 @@ def check_apex(
             else:
                 check_cds_prohibit(cdsrrs, ksks, alg)
 
-        if len(cds) > 0:
+        if len(cdsrrsets) > 0:
             assert len(rrsigs) > 0
             check_signatures(
-                rrsigs, dns.rdatatype.CDS, fqdn, ksks, zsks, offline_ksk=offline_ksk
+                cdsrrsets,
+                rrsigs,
+                dns.rdatatype.CDS,
+                ksks,
+                zsks,
+                offline_ksk=offline_ksk,
             )
 
         assert numcds == len(cdsrrs)
@@ -1275,13 +1284,13 @@ def check_subdomain(
     server, zone, ksks, zsks, offline_ksk=False, smooth=False, tsig=None
 ):
     # Test an RRset below the apex and verify it is signed correctly.
-    fqdn = f"{zone}."
     qname = f"a.{zone}."
     qtype = dns.rdatatype.A
     response = _query(server, qname, qtype, tsig=tsig)
     assert response.rcode() == dns.rcode.NOERROR
 
     match = f"{qname} {DEFAULT_TTL} IN A 10.0.0.1"
+    rrs = []
     rrsigs = []
     for rrset in response.answer:
         if rrset.match(
@@ -1290,9 +1299,10 @@ def check_subdomain(
             rrsigs.append(rrset)
         else:
             assert match in rrset.to_text()
+            rrs.append(rrset)
 
     check_signatures(
-        rrsigs, qtype, fqdn, ksks, zsks, offline_ksk=offline_ksk, smooth=smooth
+        rrs, rrsigs, qtype, ksks, zsks, offline_ksk=offline_ksk, smooth=smooth
     )
 
 
@@ -1360,12 +1370,14 @@ def check_rollover_step(server, config, policy, step):
 
             # The DS can be introduced. We ignore any parent registration delay,
             # so set the DS publish time to now.
-            server.rndc(f"dnssec -checkds -key {key.tag} published {zone}")
+            alg = key.algorithm.name
+            server.rndc(f"dnssec -checkds -key {key.tag} -alg {alg} published {zone}")
 
         if ds_swap and kp.metadata["DSState"] == "unretentive":
             # The DS can be withdrawn. We ignore any parent registration
             # delay, so set the DS withdraw time to now.
-            server.rndc(f"dnssec -checkds -key {key.tag} withdrawn {zone}")
+            alg = key.algorithm.name
+            server.rndc(f"dnssec -checkds -key {key.tag} -alg {alg} withdrawn {zone}")
 
     if check_keytimes_flag:
         check_keytimes(keys, expected)
@@ -1393,7 +1405,7 @@ def check_rollover_step(server, config, policy, step):
     return expected
 
 
-def verify_update_is_signed(server, fqdn, qname, qtype, rdata, ksks, zsks, tsig=None):
+def verify_update_is_signed(server, qname, qtype, rdata, ksks, zsks, tsig=None):
     """
     Test an RRset below the apex and verify it is updated and signed correctly.
     """
@@ -1404,6 +1416,7 @@ def verify_update_is_signed(server, fqdn, qname, qtype, rdata, ksks, zsks, tsig=
 
     rrtype = dns.rdatatype.to_text(qtype)
     match = f"{qname} {DEFAULT_TTL} IN {rrtype} {rdata}"
+    rrs = []
     rrsigs = []
     for rrset in response.answer:
         if rrset.match(
@@ -1412,12 +1425,14 @@ def verify_update_is_signed(server, fqdn, qname, qtype, rdata, ksks, zsks, tsig=
             rrsigs.append(rrset)
         elif not match in rrset.to_text():
             return False
+        else:
+            rrs.append(rrset)
 
     if len(rrsigs) == 0:
         return False
 
     # Zone is updated, ready to verify the signatures.
-    check_signatures(rrsigs, qtype, fqdn, ksks, zsks)
+    check_signatures(rrs, rrsigs, qtype, ksks, zsks)
 
     return True
 
@@ -1435,6 +1450,7 @@ def verify_rrsig_is_refreshed(
 
     rrtype = dns.rdatatype.to_text(qtype)
     match = f"{qname}. {DEFAULT_TTL} IN {rrtype}"
+    rrs = []
     rrsigs = []
     for rrset in response.answer:
         if rrset.match(
@@ -1443,6 +1459,8 @@ def verify_rrsig_is_refreshed(
             rrsigs.append(rrset)
         elif not match in rrset.to_text():
             return False
+        else:
+            rrs.append(rrset)
 
     if len(rrsigs) == 0:
         return False
@@ -1468,7 +1486,7 @@ def verify_rrsig_is_refreshed(
             return False
 
     # Zone is updated, ready to verify the signatures.
-    check_signatures(rrsigs, qtype, fqdn, ksks, zsks)
+    check_signatures(rrs, rrsigs, qtype, ksks, zsks)
 
     return True
 
@@ -1483,6 +1501,7 @@ def verify_rrsig_is_reused(server, fqdn, zonefile, qname, qtype, ksks, zsks, tsi
 
     rrtype = dns.rdatatype.to_text(qtype)
     match = f"{qname}. {DEFAULT_TTL} IN {rrtype}"
+    rrs = []
     rrsigs = []
     for rrset in response.answer:
         if rrset.match(
@@ -1491,6 +1510,7 @@ def verify_rrsig_is_reused(server, fqdn, zonefile, qname, qtype, ksks, zsks, tsi
             rrsigs.append(rrset)
         else:
             assert match in rrset.to_text()
+            rrs.append(rrset)
 
     tmp_zonefile = f"{zonefile}.tmp"
     isctest.run.cmd(
@@ -1511,7 +1531,7 @@ def verify_rrsig_is_reused(server, fqdn, zonefile, qname, qtype, ksks, zsks, tsi
     for rrsig in rrsigs:
         assert isctest.util.zone_contains(zone, rrsig)
 
-    check_signatures(rrsigs, qtype, fqdn, ksks, zsks)
+    check_signatures(rrs, rrsigs, qtype, ksks, zsks)
 
 
 def next_key_event_equals(server, zone, next_event):
@@ -1609,9 +1629,11 @@ def policy_to_properties(ttl, keys: list[str]) -> list[KeyProperties]:
     Then, optional data for specific tests may follow:
     - "goal", "dnskey", "krrsig", "zrrsig", "ds", followed by a value,
       sets the given state to the specific value
-    - "missing", set if the private key file for this key is not available.
+    - "missing", set if the private key file for this key is not available
     - "offset", an offset for testing key rollover timings
     - "tag-range", followed by <min>-<max> to test key tag ranges
+    - "sep", whether the SEP bit should be set in the key flags
+    - "adt", whether the ADT bit should be set in the key flags
     """
     proplist = []
     count = 0
@@ -1627,14 +1649,13 @@ def policy_to_properties(ttl, keys: list[str]) -> list[KeyProperties]:
         keytag_min = 0
         keytag_max = 65535
         offset = timedelta(0)
+        flags = KEYFLAG_ZONE
 
         role = line[0]
         if role == "zsk":
-            flags = 256
             metadata["ZSK"] = "yes"
             metadata["KSK"] = "no"
         else:
-            flags = 257
             metadata["ZSK"] = "yes" if role == "csk" else "no"
             metadata["KSK"] = "yes"
 
@@ -1669,6 +1690,10 @@ def policy_to_properties(ttl, keys: list[str]) -> list[KeyProperties]:
                 tagrange = keyval[1].split("-")
                 keytag_min = int(tagrange[0])
                 keytag_max = int(tagrange[1])
+            elif line[i] == ("sep"):
+                flags |= KEYFLAG_SEP
+            elif line[i] == ("adt"):
+                flags |= KEYFLAG_ADT
             elif line[i] == "missing":
                 private = False
             else:

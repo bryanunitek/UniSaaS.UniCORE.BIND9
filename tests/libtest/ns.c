@@ -81,10 +81,27 @@ matchview(isc_netaddr_t *srcaddr, isc_netaddr_t *destaddr,
 	return ISC_R_NOTIMPLEMENTED;
 }
 
+/*
+ * The interface manager owns a timer bound to the main loop, so it has to
+ * be created (and, by the tests, shut down) from that loop.
+ */
 static void
-scan_interfaces(void *arg) {
-	UNUSED(arg);
+setup_interfacemgr(void *arg ISC_ATTR_UNUSED) {
+	isc_result_t result = ns_interfacemgr_create(
+		isc_g_mctx, sctx, dispatchmgr, NULL, &interfacemgr);
+	RUNTIME_CHECK(result == ISC_R_SUCCESS);
+
 	ns_interfacemgr_scan(interfacemgr, true, false);
+}
+
+static void
+setup_zone_services(void *arg ISC_ATTR_UNUSED) {
+	dns_test_setupzonemgr();
+}
+
+static void
+shutdown_zone_services(void *arg ISC_ATTR_UNUSED) {
+	dns_test_closezonemgr();
 }
 
 int
@@ -96,10 +113,10 @@ setup_server(void **state) {
 	ns_server_create(isc_g_mctx, matchview, &sctx);
 
 	CHECK(dns_dispatchmgr_create(isc_g_mctx, &dispatchmgr));
-	CHECK(ns_interfacemgr_create(isc_g_mctx, sctx, dispatchmgr, NULL,
-				     &interfacemgr));
 
-	isc_loop_setup(isc_loop_main(), scan_interfaces, NULL);
+	isc_loop_setup(isc_loop_main(), setup_zone_services, NULL);
+	isc_loop_setup(isc_loop_main(), setup_interfacemgr, NULL);
+	isc_loop_teardown(isc_loop_main(), shutdown_zone_services, NULL);
 
 	return 0;
 
@@ -129,14 +146,26 @@ teardown_server(void **state) {
 	}
 
 	teardown_managers(state);
+	dns_test_destroyzonemgr();
 	return 0;
 }
 
 static dns_zone_t *served_zone = NULL;
 
+static void
+free_test_zone_hooks(isc_mem_t *mctx ISC_ATTR_UNUSED, void **tablep) {
+	/* Test hook tables are allocated from isc_g_mctx, not the zone pool. */
+	ns_hooktable_free(isc_g_mctx, tablep);
+}
+
 void
 ns_test_serve_zone_sethooktab(ns_hooktable_t *hooktab) {
-	dns_zone_sethooktable(served_zone, hooktab, ns_hooktable_free);
+	static const dns_zone_ops_t ops = {
+		.hooktable_free = free_test_zone_hooks,
+	};
+
+	dns_zone_setops(served_zone, &ops);
+	dns_zone_sethooktable(served_zone, hooktab);
 }
 
 isc_result_t
@@ -145,23 +174,7 @@ ns_test_serve_zone(const char *zonename, const char *filename,
 	isc_result_t result;
 	dns_db_t *db = NULL;
 
-	/*
-	 * Prepare zone structure for further processing.
-	 */
 	RETERR(dns_test_makezone(zonename, &served_zone, view, false));
-
-	/*
-	 * Start zone manager.
-	 */
-	dns_test_setupzonemgr();
-
-	/*
-	 * Add the zone to the zone manager.
-	 */
-	result = dns_test_managezone(served_zone);
-	if (result != ISC_R_SUCCESS) {
-		goto close_zonemgr;
-	}
 
 	view->nocookieudp = 512;
 
@@ -189,19 +202,15 @@ ns_test_serve_zone(const char *zonename, const char *filename,
 	return ISC_R_SUCCESS;
 
 release_zone:
-	dns_test_releasezone(served_zone);
-close_zonemgr:
-	dns_test_closezonemgr();
-	dns_zone_detach(&served_zone);
+	if (served_zone != NULL) {
+		dns_zone_detach(&served_zone);
+	}
 
 	return result;
 }
 
 void
 ns_test_cleanup_zone(void) {
-	dns_test_releasezone(served_zone);
-	dns_test_closezonemgr();
-
 	dns_zone_detach(&served_zone);
 }
 
@@ -244,7 +253,7 @@ attach_query_msg_to_client(ns_client_t *client, const char *qnamestr,
 	dns_rdataset_t *qrdataset = NULL;
 	dns_message_t *message = NULL;
 	unsigned char query[65535];
-	dns_name_t *qname = NULL;
+	dns_linkedname_t *qname = NULL;
 	isc_buffer_t querybuf;
 	dns_compress_t cctx;
 	isc_result_t result;
@@ -279,7 +288,7 @@ attach_query_msg_to_client(ns_client_t *client, const char *qnamestr,
 	 * class IN and type "qtype", link the two and add the result to the
 	 * QUESTION section of the query.
 	 */
-	result = dns_name_fromstring(qname, qnamestr, dns_rootname, 0,
+	result = dns_name_fromstring(dns_name(qname), qnamestr, dns_rootname, 0,
 				     isc_g_mctx);
 	if (result != ISC_R_SUCCESS) {
 		goto put_name;

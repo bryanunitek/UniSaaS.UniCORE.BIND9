@@ -366,7 +366,9 @@ axfr_apply_done(void *arg, isc_result_t result) {
 
 	if (result == ISC_R_SUCCESS) {
 		CHECK(dns_db_endload(xfr->db, &xfr->axfr));
-		CHECK(dns_zone_verifydb(xfr->zone, xfr->db, NULL));
+		if (dns_zone_gettype(xfr->zone) == dns_zone_mirror) {
+			CHECK(dns_zone_verifydb(xfr->view, xfr->db, NULL));
+		}
 		CHECK(axfr_finalize(xfr));
 	} else {
 		(void)dns_db_endload(xfr->db, &xfr->axfr);
@@ -509,22 +511,18 @@ ixfr_apply_one(dns_xfrin_t *xfr, ixfr_apply_data_t *data) {
 		CHECK(dns_journal_writediff(xfr->ixfr.journal, &data->diff));
 	}
 	/*
-	 * In the current implementation, we always commit the results, since
-	 * dns_zone_verifydb doesn't know how to access the in-progress
-	 * transaction.
-	 */
-	dns_db_commitupdate(xfr->db, &callbacks);
-
-	/*
 	 * At the moment, rdatacallbacks doesn't offer a way to inspect the
-	 * result of a transaction before committing it.
+	 * result of a transaction before committing it, so dns_zone_verifydb
+	 * can't see the in-progress transaction.
 	 *
 	 * So we need to commit *before* calling dns_zone_verifydb, and rely
 	 * on closeversion to actually do cleanup.
 	 */
 	dns_db_commitupdate(xfr->db, &callbacks);
 
-	CHECK(dns_zone_verifydb(xfr->zone, xfr->db, xfr->ver));
+	if (dns_zone_gettype(xfr->zone) == dns_zone_mirror) {
+		CHECK(dns_zone_verifydb(xfr->view, xfr->db, xfr->ver));
+	}
 
 	result = ixfr_end_transaction(&xfr->ixfr);
 
@@ -1430,7 +1428,6 @@ xfrin_connect_done(isc_result_t eresult, isc_region_t *region ISC_ATTR_UNUSED,
 	char addrtext[ISC_SOCKADDR_FORMATSIZE];
 	char signerbuf[DNS_NAME_FORMATSIZE];
 	const char *signer = "", *sep = "";
-	dns_zonemgr_t *zmgr = NULL;
 	isc_result_t result;
 
 	REQUIRE(VALID_XFRIN(xfr));
@@ -1450,8 +1447,7 @@ xfrin_connect_done(isc_result_t eresult, isc_region_t *region ISC_ATTR_UNUSED,
 		goto cleanup;
 	}
 
-	zmgr = dns_zone_getmgr(xfr->zone);
-	if (zmgr != NULL) {
+	if (dns_zone_getloop(xfr->zone) != NULL) {
 		dns_view_t *view = dns_zone_getview(xfr->zone);
 		dns_unreachcache_remove(view->unreachcache, &xfr->primaryaddr,
 					&xfr->sourceaddr);
@@ -1489,8 +1485,7 @@ cleanup:
 		 * the server has a permanent networking error or
 		 * the connection attempt as timed out.
 		 */
-		zmgr = dns_zone_getmgr(xfr->zone);
-		if (zmgr != NULL) {
+		if (dns_zone_getloop(xfr->zone) != NULL) {
 			dns_view_t *view = dns_zone_getview(xfr->zone);
 			dns_unreachcache_add(view->unreachcache,
 					     &xfr->primaryaddr,
@@ -1517,11 +1512,12 @@ detach:
  * into the given dns_message_t.
  */
 static void
-tuple2msgname(dns_difftuple_t *tuple, dns_message_t *msg, dns_name_t **target) {
+tuple2msgname(dns_difftuple_t *tuple, dns_message_t *msg,
+	      dns_linkedname_t **target) {
 	dns_rdata_t *rdata = NULL;
 	dns_rdatalist_t *rdl = NULL;
 	dns_rdataset_t *rds = NULL;
-	dns_name_t *name = NULL;
+	dns_linkedname_t *name = NULL;
 
 	REQUIRE(target != NULL && *target == NULL);
 
@@ -1538,7 +1534,7 @@ tuple2msgname(dns_difftuple_t *tuple, dns_message_t *msg, dns_name_t **target) {
 	dns_rdatalist_tordataset(rdl, rds);
 
 	dns_message_gettempname(msg, &name);
-	dns_name_clone(&tuple->name, name);
+	dns_name_clone(&tuple->name, dns_name(name));
 	ISC_LIST_APPEND(name->list, rds, link);
 
 	*target = name;
@@ -1586,9 +1582,9 @@ xfrin_send_request(dns_xfrin_t *xfr) {
 	dns_rdataset_t *qrdataset = NULL;
 	dns_message_t *msg = NULL;
 	dns_difftuple_t *soatuple = NULL;
-	dns_name_t *qname = NULL;
+	dns_linkedname_t *qname = NULL;
 	dns_dbversion_t *ver = NULL;
-	dns_name_t *msgsoaname = NULL;
+	dns_linkedname_t *msgsoaname = NULL;
 	bool edns = xfr->edns;
 	bool reqnsid = xfr->view->requestnsid;
 	bool reqexpire = dns_zone_getrequestexpire(xfr->zone);
@@ -1603,7 +1599,7 @@ xfrin_send_request(dns_xfrin_t *xfr) {
 
 	/* Create a name for the question section. */
 	dns_message_gettempname(msg, &qname);
-	dns_name_clone(&xfr->name, qname);
+	dns_name_clone(&xfr->name, dns_name(qname));
 
 	/* Formulate the question and attach it to the question name. */
 	dns_message_gettemprdataset(msg, &qrdataset);
@@ -1980,7 +1976,8 @@ xfrin_recv_done(isc_result_t result, isc_region_t *region, void *arg) {
 			DNS_RDATASET_FOREACH(rds) {
 				dns_rdata_t rdata = DNS_RDATA_INIT;
 				dns_rdataset_current(rds, &rdata);
-				CHECK(xfr_rr(xfr, name, rds->ttl, &rdata));
+				CHECK(xfr_rr(xfr, dns_name(name), rds->ttl,
+					     &rdata));
 
 				/*
 				 * Did we hit the maximum ixfr diffs limit?

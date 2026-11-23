@@ -43,14 +43,6 @@ static isc_result_t fromwire_ #(ARGS_FROMWIRE) {
 	return ISC_R_NOTIMPLEMENTED;
 }
 
-static isc_result_t towire_ #(ARGS_TOWIRE) {
-	REQUIRE(rdata->type == dns_rdatatype_proforma.c #);
-	REQUIRE(rdata->rdclass == #);
-	REQUIRE(rdata->length != 0); /* XXX */
-
-	return ISC_R_NOTIMPLEMENTED;
-}
-
 static int compare_ #(ARGS_COMPARE) {
 	isc_region_t r1;
 	isc_region_t r2;

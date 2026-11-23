@@ -38,6 +38,29 @@
 #include <dns/xfrin.h>
 #include <dns/zt.h>
 
+/*
+ * Shared application callbacks.  Tables are immutable and must outlive every
+ * zone using them.  Callback arguments and plugin objects remain per-zone.
+ */
+typedef struct dns_zone_ops {
+	dns_checkmxfunc_t	  checkmx;
+	dns_checksrvfunc_t	  checksrv;
+	dns_checknsfunc_t	  checkns;
+	dns_checkisservedbyfunc_t checkisservedby;
+	dns_isselffunc_t	  isself;
+	void (*plugins_free)(isc_mem_t *, void **);
+	void (*hooktable_free)(isc_mem_t *, void **);
+} dns_zone_ops_t;
+
+void
+dns_zone_setops(dns_zone_t *zone, const dns_zone_ops_t *ops);
+/*%<
+ * Install a shared callback table before enabling callbacks or adding plugins.
+ * The table must remain immutable and alive until the zone is destroyed.
+ * Reinstalling the same table is allowed; replacing it is not.
+ * Call before publishing the zone, or with exclusive access to it.
+ */
+
 /* Add -DDNS_ZONE_TRACE=1 to CFLAGS for detailed reference tracing */
 
 typedef enum {
@@ -82,29 +105,28 @@ typedef enum {
 	DNS_ZONEOPT_CHECKMX = 1 << 10,	    /*%< check-mx */
 	DNS_ZONEOPT_CHECKMXFAIL = 1 << 11,  /*%< fatal check-mx failures */
 	DNS_ZONEOPT_CHECKINTEGRITY = 1 << 12, /*%< perform integrity checks */
-	DNS_ZONEOPT_CHECKSIBLING = 1 << 13, /*%< perform sibling glue checks */
-	DNS_ZONEOPT_NOCHECKNS = 1 << 14,    /*%< disable IN NS address checks */
-	DNS_ZONEOPT_WARNMXCNAME = 1 << 15,  /*%< warn on MX CNAME check */
-	DNS_ZONEOPT_IGNOREMXCNAME = 1 << 16,  /*%< ignore MX CNAME check */
-	DNS_ZONEOPT_WARNSRVCNAME = 1 << 17,   /*%< warn on SRV CNAME check */
-	DNS_ZONEOPT_IGNORESRVCNAME = 1 << 18, /*%< ignore SRV CNAME check */
-	DNS_ZONEOPT_UPDATECHECKKSK = 1 << 19, /*%< check dnskey KSK flag */
-	DNS_ZONEOPT_TRYTCPREFRESH = 1 << 20, /*%< try tcp refresh on udp failure
+	DNS_ZONEOPT_CHECKSIBLING = 1 << 13,  /*%< perform sibling glue checks */
+	DNS_ZONEOPT_WARNMXCNAME = 1 << 14,   /*%< warn on MX CNAME check */
+	DNS_ZONEOPT_IGNOREMXCNAME = 1 << 15, /*%< ignore MX CNAME check */
+	DNS_ZONEOPT_WARNSRVCNAME = 1 << 16,  /*%< warn on SRV CNAME check */
+	DNS_ZONEOPT_IGNORESRVCNAME = 1 << 17, /*%< ignore SRV CNAME check */
+	DNS_ZONEOPT_UPDATECHECKKSK = 1 << 18, /*%< check dnskey KSK flag */
+	DNS_ZONEOPT_TRYTCPREFRESH = 1 << 19, /*%< try tcp refresh on udp failure
 					      */
-	DNS_ZONEOPT_NOTIFYTOSOA = 1 << 21,   /*%< Notify the SOA MNAME */
-	DNS_ZONEOPT_NSEC3TESTZONE = 1 << 22, /*%< nsec3-test-zone */
-	DNS_ZONEOPT_LOGREPORTS = 1 << 23,    /* Log error-reporting queries */
-	DNS_ZONEOPT_DNSKEYKSKONLY = 1 << 24, /*%< dnssec-dnskey-kskonly */
-	DNS_ZONEOPT_CHECKDUPRR = 1 << 25,    /*%< check-dup-records */
-	DNS_ZONEOPT_CHECKDUPRRFAIL = 1 << 26, /*%< fatal check-dup-records
+	DNS_ZONEOPT_NOTIFYTOSOA = 1 << 20,   /*%< Notify the SOA MNAME */
+	DNS_ZONEOPT_NSEC3TESTZONE = 1 << 21, /*%< nsec3-test-zone */
+	DNS_ZONEOPT_LOGREPORTS = 1 << 22,    /* Log error-reporting queries */
+	DNS_ZONEOPT_DNSKEYKSKONLY = 1 << 23, /*%< dnssec-dnskey-kskonly */
+	DNS_ZONEOPT_CHECKDUPRR = 1 << 24,    /*%< check-dup-records */
+	DNS_ZONEOPT_CHECKDUPRRFAIL = 1 << 25, /*%< fatal check-dup-records
 					       * failures */
-	DNS_ZONEOPT_CHECKSPF = 1 << 27,	      /*%< check SPF records */
-	DNS_ZONEOPT_CHECKTTL = 1 << 28,	      /*%< check max-zone-ttl */
-	DNS_ZONEOPT_AUTOEMPTY = 1 << 29,      /*%< automatic empty zone */
-	DNS_ZONEOPT_CHECKSVCB = 1 << 30,      /*%< check SVBC records */
-	DNS_ZONEOPT_ZONEVERSION = 1U << 31,   /*%< enable zoneversion */
-	DNS_ZONEOPT_FULLSIGN = 1ULL << 32,    /*%< fully sign zone */
-	DNS_ZONEOPT_FORCEKEYMGR = 1ULL << 33, /*%< force keymgr step */
+	DNS_ZONEOPT_CHECKSPF = 1 << 26,	      /*%< check SPF records */
+	DNS_ZONEOPT_CHECKTTL = 1 << 27,	      /*%< check max-zone-ttl */
+	DNS_ZONEOPT_AUTOEMPTY = 1 << 28,      /*%< automatic empty zone */
+	DNS_ZONEOPT_CHECKSVCB = 1 << 29,      /*%< check SVBC records */
+	DNS_ZONEOPT_ZONEVERSION = 1U << 30,   /*%< enable zoneversion */
+	DNS_ZONEOPT_FULLSIGN = 1ULL << 31,    /*%< fully sign zone */
+	DNS_ZONEOPT_FORCEKEYMGR = 1ULL << 32, /*%< force keymgr step */
 	DNS_ZONEOPT___MAX = UINT64_MAX, /* trick to make the ENUM 64-bit wide */
 } dns_zoneopt_t;
 
@@ -329,6 +351,15 @@ dns_zone_markdirty(dns_zone_t *zone);
  *	Mark a zone as 'dirty'.
  *
  * Require:
+ *\li	'zone' to be a valid zone.
+ */
+
+void
+dns_zone_forcemaint(dns_zone_t *zone);
+/*%<
+ * Reconsider the maintenance timer of a configured zone.
+ *
+ * Requires:
  *\li	'zone' to be a valid zone.
  */
 
@@ -571,6 +602,17 @@ dns_zone_prepare_shutdown(dns_zone_t *zone);
  *
  * Requires:
  *\li	'zone' to be a valid initialised zone.
+ */
+
+unsigned int
+dns_zone_getcount(dns_zone_t *zone, dns_zonestate_t state);
+/*%<
+ * Return this zone's contribution to a non-transfer status count.
+ *
+ * Requires:
+ *\li	'zone' to be a valid zone.
+ *\li	'state' is DNS_ZONESTATE_XFERFIRSTREFRESH, DNS_ZONESTATE_SOAQUERY,
+ *	DNS_ZONESTATE_ANY, or DNS_ZONESTATE_AUTOMATIC.
  */
 
 isc_result_t
@@ -903,22 +945,17 @@ dns_zone_isloaded(dns_zone_t *zone);
  */
 
 isc_result_t
-dns_zone_verifydb(dns_zone_t *zone, dns_db_t *db, dns_dbversion_t *ver);
+dns_zone_verifydb(dns_view_t *view, dns_db_t *db, dns_dbversion_t *ver);
 /*%<
- * If 'zone' is a mirror zone, perform DNSSEC validation of version 'ver' of
- * its database, 'db'.  Ensure that the DNSKEY RRset at zone apex is signed by
- * at least one trust anchor specified for the view that 'zone' is assigned to.
- * If 'ver' is NULL, use the current version of 'db'.
- *
- * If 'zone' is not a mirror zone, return ISC_R_SUCCESS immediately.
+ * Perform DNSSEC validation of version 'ver' of database 'db'.  Ensure that
+ * the DNSKEY RRset at zone apex is signed by at least one trust anchor in
+ * 'view', if non-NULL.  If 'ver' is NULL, use the current version of 'db'.
+ * The caller must keep 'view' alive (a weak reference suffices) throughout
+ * the call, and is responsible for deciding whether validation is required.
  *
  * Returns:
  *
- * \li	#ISC_R_SUCCESS		either 'zone' is not a mirror zone or 'zone' is
- *				a mirror zone and all DNSSEC checks succeeded
- *				and the DNSKEY RRset at zone apex is signed by
- *				a trusted key
- *
+ * \li	#ISC_R_SUCCESS		all DNSSEC checks succeeded
  * \li	#DNS_R_VERIFYFAILURE	any other case
  */
 
@@ -988,15 +1025,14 @@ dns_zonemgr_setkeystores(dns_zonemgr_t *zmgr, dns_keystorelist_t *keystores);
  */
 
 void
-dns_zone_setplugins(dns_zone_t *zone, void *plugins,
-		    void (*plugins_free)(isc_mem_t *, void **));
+dns_zone_setplugins(dns_zone_t *zone, void *plugins);
 /**<
- * Initialize zone plugins owning list and free callback
+ * Initialize zone plugins owning list
  *
  * Requires:
  * \li	'zone' to be a valid zone.
  * \li  'plugins' to be initialized.
- * \li  'plugins_free' to be valid.
+ * \li  the operations table to provide 'plugins_free'.
  */
 
 void

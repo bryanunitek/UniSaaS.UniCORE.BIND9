@@ -28,12 +28,12 @@
 #include <dns/keystore.h>
 #include <dns/keyvalues.h>
 #include <dns/nsec3.h>
-#include <dns/secalg.h>
 #include <dns/ttl.h>
 
 #include <dst/dst.h>
 
 #include <isccfg/cfg.h>
+#include <isccfg/clause.h>
 #include <isccfg/duration.h>
 #include <isccfg/kaspconf.h>
 #include <isccfg/namedconf.h>
@@ -77,7 +77,8 @@ kaspcfg_log(const cfg_obj_t *config, int level, const char *fmt, ...) {
  * Utility function for getting a configuration option.
  */
 static isc_result_t
-confget(cfg_obj_t const *const *maps, const char *name, const cfg_obj_t **obj) {
+confget(cfg_obj_t const *const *maps, enum cfg_clause name,
+	const cfg_obj_t **obj) {
 	for (size_t i = 0;; i++) {
 		if (maps[i] == NULL) {
 			return ISC_R_NOTFOUND;
@@ -111,7 +112,7 @@ parse_duration(const char *str) {
  * Utility function for configuring durations.
  */
 static uint32_t
-get_duration(const cfg_obj_t **maps, const char *option, const char *dfl) {
+get_duration(const cfg_obj_t **maps, enum cfg_clause option, const char *dfl) {
 	const cfg_obj_t *obj;
 	isc_result_t result;
 	obj = NULL;
@@ -128,7 +129,7 @@ get_duration(const cfg_obj_t **maps, const char *option, const char *dfl) {
  * Utility function for configuring strings.
  */
 static const char *
-get_string(const cfg_obj_t **maps, const char *option) {
+get_string(const cfg_obj_t **maps, enum cfg_clause option) {
 	const cfg_obj_t *obj;
 	isc_result_t result;
 	obj = NULL;
@@ -152,6 +153,7 @@ cfg_kaspkey_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 	isc_result_t result;
 	dns_kasp_key_t *key = NULL;
 	const cfg_obj_t *tagrange = NULL;
+	const cfg_obj_t *keyflags = NULL;
 	uint32_t min_lifetime = UINT32_MAX;
 
 	/* Create a new key reference. */
@@ -164,6 +166,7 @@ cfg_kaspkey_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 		key->lifetime = 0; /* unlimited */
 		key->algorithm = DST_ALG_ECDSA256;
 		key->length = -1;
+		key->flags = DNS_KEYOWNER_ZONE | DNS_KEYFLAG_KSK;
 		CHECK(dns_keystorelist_find(keystorelist,
 					    DNS_KEYSTORE_KEYDIRECTORY,
 					    &key->keystore));
@@ -326,10 +329,9 @@ cfg_kaspkey_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 			case DST_ALG_RSASHA512:
 			case DST_ALG_RSASHA256PRIVATEOID:
 			case DST_ALG_RSASHA512PRIVATEOID:
+				min = 1024;
 				if (isc_crypto_fips_mode()) {
 					min = 2048;
-				} else {
-					min = DST_ALG_RSASHA512 ? 1024 : 512;
 				}
 				if (size < min || size > 4096) {
 					if (log_errors) {
@@ -347,6 +349,7 @@ cfg_kaspkey_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 			case DST_ALG_ECDSA384:
 			case DST_ALG_ED25519:
 			case DST_ALG_ED448:
+			case DST_ALG_MLDSA44:
 				if (log_errors) {
 					kaspcfg_log(
 						obj, ISC_LOG_WARNING,
@@ -360,6 +363,28 @@ cfg_kaspkey_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 			}
 
 			key->length = size;
+		}
+
+		key->flags = DNS_KEYOWNER_ZONE;
+		keyflags = cfg_tuple_get(config, "flags");
+		if (cfg_obj_islist(keyflags)) {
+			const cfg_listelt_t *element = NULL;
+
+			for (element = cfg_list_first(keyflags);
+			     element != NULL; element = cfg_list_next(element))
+			{
+				const cfg_obj_t *flagobj =
+					cfg_listelt_value(element);
+				const char *flag = cfg_obj_asstring(flagobj);
+
+				if (strcasecmp(flag, "sep") == 0) {
+					key->flags |= DNS_KEYFLAG_KSK;
+				} else if (strcasecmp(flag, "adt") == 0) {
+					key->flags |= DNS_KEYFLAG_ADT;
+				}
+			}
+		} else if ((key->role & DNS_KASP_KEY_ROLE_KSK) != 0) {
+			key->flags |= DNS_KEYFLAG_KSK;
 		}
 
 		tagrange = cfg_tuple_get(config, "tag-range");
@@ -441,8 +466,8 @@ cfg_nsec3param_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 	dns_kasp_thaw(kasp);
 
 	if (badalg > 0) {
-		char algstr[DNS_SECALG_FORMATSIZE];
-		dns_secalg_format((dns_secalg_t)badalg, algstr, sizeof(algstr));
+		char algstr[DST_ALG_FORMATSIZE];
+		dst_algorithm_format(badalg, algstr, sizeof(algstr));
 		if (log_errors) {
 			kaspcfg_log(obj, ISC_LOG_ERROR,
 				    "dnssec-policy: cannot use nsec3 with "
@@ -472,6 +497,13 @@ cfg_nsec3param_fromconfig(const cfg_obj_t *config, dns_kasp_t *kasp,
 	obj = cfg_tuple_get(config, "salt-length");
 	if (cfg_obj_isuint32(obj)) {
 		saltlen = cfg_obj_asuint32(obj);
+	}
+	if (saltlen != DEFAULT_NSEC3PARAM_SALTLEN) {
+		if (log_errors) {
+			kaspcfg_log(obj, ISC_LOG_WARNING,
+				    "dnssec-policy: deprecated NSEC3 "
+				    "salt-length > 0");
+		}
 	}
 	if (saltlen > 0xff) {
 		if (log_errors) {
@@ -594,15 +626,15 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 	maps[i] = NULL;
 
 	/* Configuration: Signatures */
-	sigjitter = get_duration(maps, "signatures-jitter",
+	sigjitter = get_duration(maps, CFG_CLAUSE_SIGNATURES_JITTER,
 				 DNS_KASP_SIG_JITTER);
 	dns_kasp_setsigjitter(kasp, sigjitter);
 
-	sigrefresh = get_duration(maps, "signatures-refresh",
+	sigrefresh = get_duration(maps, CFG_CLAUSE_SIGNATURES_REFRESH,
 				  DNS_KASP_SIG_REFRESH);
 	dns_kasp_setsigrefresh(kasp, sigrefresh);
 
-	sigvalidity = get_duration(maps, "signatures-validity-dnskey",
+	sigvalidity = get_duration(maps, CFG_CLAUSE_SIGNATURES_VALIDITY_DNSKEY,
 				   DNS_KASP_SIG_VALIDITY_DNSKEY);
 	if (sigrefresh >= (sigvalidity * 0.9)) {
 		if (log_errors) {
@@ -627,7 +659,7 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 		result = ISC_R_FAILURE;
 	}
 
-	sigvalidity = get_duration(maps, "signatures-validity",
+	sigvalidity = get_duration(maps, CFG_CLAUSE_SIGNATURES_VALIDITY,
 				   DNS_KASP_SIG_VALIDITY);
 	if (sigrefresh >= (sigvalidity * 0.9)) {
 		if (log_errors) {
@@ -657,7 +689,7 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 	}
 
 	/* Configuration: Zone settings */
-	(void)confget(maps, "inline-signing", &inlinesigning);
+	(void)confget(maps, CFG_CLAUSE_INLINE_SIGNING, &inlinesigning);
 	if (inlinesigning != NULL && cfg_obj_isboolean(inlinesigning)) {
 		dns_kasp_setinlinesigning(kasp,
 					  cfg_obj_asboolean(inlinesigning));
@@ -666,44 +698,46 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 	}
 
 	obj = NULL;
-	(void)confget(maps, "manual-mode", &obj);
+	(void)confget(maps, CFG_CLAUSE_MANUAL_MODE, &obj);
 	if (obj != NULL) {
 		manual_mode = cfg_obj_asboolean(obj);
 	}
 	dns_kasp_setmanualmode(kasp, manual_mode);
 
-	maxttl = get_duration(maps, "max-zone-ttl", DNS_KASP_ZONE_MAXTTL);
+	maxttl = get_duration(maps, CFG_CLAUSE_MAX_ZONE_TTL,
+			      DNS_KASP_ZONE_MAXTTL);
 	dns_kasp_setzonemaxttl(kasp, maxttl);
 
-	zonepropdelay = get_duration(maps, "zone-propagation-delay",
+	zonepropdelay = get_duration(maps, CFG_CLAUSE_ZONE_PROPAGATION_DELAY,
 				     DNS_KASP_ZONE_PROPDELAY);
 	dns_kasp_setzonepropagationdelay(kasp, zonepropdelay);
 
 	/* Configuration: Parent settings */
-	dsttl = get_duration(maps, "parent-ds-ttl", DNS_KASP_DS_TTL);
+	dsttl = get_duration(maps, CFG_CLAUSE_PARENT_DS_TTL, DNS_KASP_DS_TTL);
 	dns_kasp_setdsttl(kasp, dsttl);
 
-	parentpropdelay = get_duration(maps, "parent-propagation-delay",
+	parentpropdelay = get_duration(maps,
+				       CFG_CLAUSE_PARENT_PROPAGATION_DELAY,
 				       DNS_KASP_PARENT_PROPDELAY);
 	dns_kasp_setparentpropagationdelay(kasp, parentpropdelay);
 
 	/* Configuration: Keys */
 	obj = NULL;
-	(void)confget(maps, "offline-ksk", &obj);
+	(void)confget(maps, CFG_CLAUSE_OFFLINE_KSK, &obj);
 	if (obj != NULL) {
 		offline_ksk = cfg_obj_asboolean(obj);
 	}
 	dns_kasp_setofflineksk(kasp, offline_ksk);
 
 	obj = NULL;
-	(void)confget(maps, "cdnskey", &obj);
+	(void)confget(maps, CFG_CLAUSE_CDNSKEY, &obj);
 	if (obj != NULL) {
 		dns_kasp_setcdnskey(kasp, cfg_obj_asboolean(obj));
 	} else {
 		dns_kasp_setcdnskey(kasp, true);
 	}
 
-	(void)confget(maps, "cds-digest-types", &cds);
+	(void)confget(maps, CFG_CLAUSE_CDS_DIGEST_TYPES, &cds);
 	if (cds != NULL) {
 		CFG_LIST_FOREACH(cds, element) {
 			CHECK(add_digest(kasp, cfg_listelt_value(element),
@@ -713,19 +747,19 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 		dns_kasp_adddigest(kasp, DNS_DSDIGEST_SHA256);
 	}
 
-	dnskeyttl = get_duration(maps, "dnskey-ttl", DNS_KASP_KEY_TTL);
+	dnskeyttl = get_duration(maps, CFG_CLAUSE_DNSKEY_TTL, DNS_KASP_KEY_TTL);
 	dns_kasp_setdnskeyttl(kasp, dnskeyttl);
 
-	publishsafety = get_duration(maps, "publish-safety",
+	publishsafety = get_duration(maps, CFG_CLAUSE_PUBLISH_SAFETY,
 				     DNS_KASP_PUBLISH_SAFETY);
 	dns_kasp_setpublishsafety(kasp, publishsafety);
 
-	retiresafety = get_duration(maps, "retire-safety",
+	retiresafety = get_duration(maps, CFG_CLAUSE_RETIRE_SAFETY,
 				    DNS_KASP_RETIRE_SAFETY);
 	dns_kasp_setretiresafety(kasp, retiresafety);
 
-	dns_kasp_setpurgekeys(
-		kasp, get_duration(maps, "purge-keys", DNS_KASP_PURGE_KEYS));
+	dns_kasp_setpurgekeys(kasp, get_duration(maps, CFG_CLAUSE_PURGE_KEYS,
+						 DNS_KASP_PURGE_KEYS));
 
 	ipub = dnskeyttl + publishsafety + zonepropdelay;
 	iret = dsttl + retiresafety + parentpropdelay;
@@ -735,7 +769,7 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 	       zonepropdelay;
 	zsk_min_lifetime = ISC_MAX(ipub, iret);
 
-	(void)confget(maps, "keys", &keys);
+	(void)confget(maps, CFG_CLAUSE_KEYS, &keys);
 	if (keys != NULL) {
 		char role[DST_MAX_ALGS] = { 0 };
 		bool warn[DST_MAX_ALGS][2] = { { false } };
@@ -830,6 +864,7 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 			new_key->lifetime = dns_kasp_key_lifetime(key);
 			new_key->algorithm = dns_kasp_key_algorithm(key);
 			new_key->length = dns_kasp_key_size(key);
+			new_key->flags = dns_kasp_key_flags(key);
 			result = dns_keystorelist_find(
 				keystorelist, DNS_KEYSTORE_KEYDIRECTORY,
 				&new_key->keystore);
@@ -856,7 +891,7 @@ cfg_kasp_fromconfig(const cfg_obj_t *config, dns_kasp_t *default_kasp,
 	}
 
 	/* Configuration: NSEC3 */
-	(void)confget(maps, "nsec3param", &nsec3);
+	(void)confget(maps, CFG_CLAUSE_NSEC3PARAM, &nsec3);
 	if (nsec3 == NULL) {
 		if (default_kasp != NULL && dns_kasp_nsec3(default_kasp)) {
 			dns_kasp_setnsec3param(
@@ -950,6 +985,7 @@ cfg_kasp_builtinconfig(isc_mem_t *mctx, const char *name,
 		dns_kasp_key_create(kasp, &new_key);
 		new_key->role |= DNS_KASP_KEY_ROLE_KSK;
 		new_key->role |= DNS_KASP_KEY_ROLE_ZSK;
+		new_key->flags = DNS_KEYOWNER_ZONE | DNS_KEYFLAG_KSK;
 		new_key->lifetime = 0;
 		new_key->algorithm = DST_ALG_ECDSA256;
 		new_key->length = 256;
@@ -1030,10 +1066,10 @@ cfg_keystore_fromconfig(const cfg_obj_t *config, isc_mem_t *mctx,
 		koptions = cfg_tuple_get(config, "options");
 		maps[i++] = koptions;
 		maps[i] = NULL;
-		dns_keystore_setdirectory(keystore,
-					  get_string(maps, "directory"));
-		dns_keystore_setpkcs11uri(keystore,
-					  get_string(maps, "pkcs11-uri"));
+		dns_keystore_setdirectory(
+			keystore, get_string(maps, CFG_CLAUSE_DIRECTORY));
+		dns_keystore_setpkcs11uri(
+			keystore, get_string(maps, CFG_CLAUSE_PKCS11_URI));
 	}
 
 	/* Append it to the list for future lookups. */

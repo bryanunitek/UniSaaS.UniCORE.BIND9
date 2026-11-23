@@ -71,6 +71,7 @@
 #include <dns/master.h>
 #include <dns/ssu.h>
 #include <dns/zone.h>
+#include <dns/zonemgr.h>
 #include <dns/zoneproperties.h>
 
 #include "dlz_p.h"
@@ -400,9 +401,9 @@ dns_dlz_writeablezone(dns_view_t *view, dns_dlzdb_t *dlzdb,
 	isc_buffer_constinit(&buffer, zone_name, strlen(zone_name));
 	isc_buffer_add(&buffer, strlen(zone_name));
 	dns_fixedname_init(&fixorigin);
-	CHECK(dns_name_fromtext(dns_fixedname_name(&fixorigin), &buffer,
-				dns_rootname, 0));
-	origin = dns_fixedname_name(&fixorigin);
+	CHECK(dns_name_fromtext(dns_name(&fixorigin), &buffer, dns_rootname,
+				0));
+	origin = dns_name(&fixorigin);
 
 	if (!dlzdb->search) {
 		isc_log_write(DNS_LOGCATEGORY_DATABASE, DNS_LOGMODULE_DLZ,
@@ -423,7 +424,7 @@ dns_dlz_writeablezone(dns_view_t *view, dns_dlzdb_t *dlzdb,
 	INSIST(dupzone == NULL);
 
 	/* Create it */
-	dns_zone_create(&zone, view->mctx, 0);
+	CHECK(dns_zonemgr_createzone(dns_g_zonemgr, &zone));
 	dns_zone_setorigin(zone, origin);
 	dns_zone_setview(zone, view);
 

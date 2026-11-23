@@ -177,30 +177,6 @@ fromwire_in_srv(ARGS_FROMWIRE) {
 	return dns_name_fromwire(&name, source, dctx, target);
 }
 
-static isc_result_t
-towire_in_srv(ARGS_TOWIRE) {
-	dns_name_t name;
-	isc_region_t sr;
-
-	REQUIRE(rdata->type == dns_rdatatype_srv);
-	REQUIRE(rdata->length != 0);
-
-	dns_compress_setpermitted(cctx, false);
-	/*
-	 * Priority, weight, port.
-	 */
-	dns_rdata_toregion(rdata, &sr);
-	RETERR(mem_tobuffer(target, sr.base, 6));
-	isc_region_consume(&sr, 6);
-
-	/*
-	 * Target.
-	 */
-	dns_name_init(&name);
-	dns_name_fromregion(&name, &sr);
-	return dns_name_towire(&name, cctx, target);
-}
-
 static int
 compare_in_srv(ARGS_COMPARE) {
 	dns_name_t name1;
@@ -319,19 +295,18 @@ additionaldata_in_srv(ARGS_ADDLDATA) {
 
 	dns_fixedname_init(&fixed);
 	snprintf(buf, sizeof(buf), "_%u._tcp", port);
-	result = dns_name_fromstring(dns_fixedname_name(&fixed), buf, NULL, 0,
-				     NULL);
+	result = dns_name_fromstring(dns_name(&fixed), buf, NULL, 0, NULL);
 	if (result != ISC_R_SUCCESS) {
 		return ISC_R_SUCCESS;
 	}
 
-	result = dns_name_concatenate(dns_fixedname_name(&fixed), &name,
-				      dns_fixedname_name(&fixed));
+	result = dns_name_concatenate(dns_name(&fixed), &name,
+				      dns_name(&fixed));
 	if (result != ISC_R_SUCCESS) {
 		return ISC_R_SUCCESS;
 	}
 
-	return (add)(arg, dns_fixedname_name(&fixed), dns_rdatatype_tlsa,
+	return (add)(arg, dns_name(&fixed), dns_rdatatype_tlsa,
 		     NULL DNS__DB_FILELINE);
 }
 

@@ -484,7 +484,6 @@ keymgr_keyid_conflict(dst_key_t *newkey, uint16_t min, uint16_t max,
  * Create a new key for 'origin' given the kasp key configuration 'kkey'.
  * This will check for key id collisions with keys in 'keylist'.
  * The created key will be stored in 'dst_key'.
- *
  */
 static isc_result_t
 keymgr_createkey(dns_kasp_key_t *kkey, const dns_name_t *origin,
@@ -494,7 +493,7 @@ keymgr_createkey(dns_kasp_key_t *kkey, const dns_name_t *origin,
 		 dst_key_t **dst_key) {
 	isc_result_t result = ISC_R_SUCCESS;
 	bool conflict = false;
-	int flags = DNS_KEYOWNER_ZONE;
+	int flags = (int)dns_kasp_key_flags(kkey);
 	dst_key_t *newkey = NULL;
 	uint32_t alg = dns_kasp_key_algorithm(kkey);
 	dns_keystore_t *keystore = dns_kasp_key_keystore(kkey);
@@ -503,10 +502,6 @@ keymgr_createkey(dns_kasp_key_t *kkey, const dns_name_t *origin,
 	dns_dnsseckeylist_t keykeys;
 
 	ISC_LIST_INIT(keykeys);
-
-	if (dns_kasp_key_ksk(kkey)) {
-		flags |= DNS_KEYFLAG_KSK;
-	}
 
 	/*
 	 * We also need to check against K* files for KEYs.
@@ -543,7 +538,7 @@ keymgr_createkey(dns_kasp_key_t *kkey, const dns_name_t *origin,
 			/* Try again. */
 			isc_log_write(DNS_LOGCATEGORY_DNSSEC,
 				      DNS_LOGMODULE_DNSSEC, ISC_LOG_WARNING,
-				      "keymgr: key collision id %d",
+				      "keymgr: key collision id %hu",
 				      dst_key_id(newkey));
 			dst_key_free(&newkey);
 		}
@@ -2743,8 +2738,9 @@ rollover_status(dns_dnsseckey_t *dkey, dns_kasp_t *kasp,
 							"  ! Once the DS is in "
 							"the parent, run 'rndc "
 							"dnssec -checkds -key "
-							"%d published' to mark "
-							"it as published.\n",
+							"%hu published' to "
+							"mark it as "
+							"published.\n",
 							dst_key_id(key)));
 					}
 				} else {
@@ -2793,8 +2789,9 @@ rollover_status(dns_dnsseckey_t *dkey, dns_kasp_t *kasp,
 							"removed from the "
 							"parent, run 'rndc "
 							"dnssec -checkds -key "
-							"%d withdrawn' to mark "
-							"it as withdrawn.\n",
+							"%hu withdrawn' to "
+							"mark it as "
+							"withdrawn.\n",
 							dst_key_id(key)));
 					}
 				} else {
@@ -2873,7 +2870,7 @@ dns_keymgr_status(dns_kasp_t *kasp, dns_dnsseckeylist_t *keyring,
 	REQUIRE(buf != NULL);
 
 	ISC_LIST_FOREACH(*keyring, dkey, link) {
-		char algstr[DNS_NAME_FORMATSIZE];
+		char algstr[DST_ALG_FORMATSIZE];
 
 		if (dst_key_is_unused(dkey->key)) {
 			continue;
@@ -2884,9 +2881,9 @@ dns_keymgr_status(dns_kasp_t *kasp, dns_dnsseckeylist_t *keyring,
 		}
 
 		// key data
-		dns_secalg_format((dns_secalg_t)dst_key_alg(dkey->key), algstr,
-				  sizeof(algstr));
-		CHECK(isc_buffer_printf(buf, "\n%s %d (%s):\n",
+		dst_algorithm_format(dst_key_alg(dkey->key), algstr,
+				     sizeof(algstr));
+		CHECK(isc_buffer_printf(buf, "\n%s %hu (%s):\n",
 					keymgr_keyrole(dkey->key),
 					dst_key_id(dkey->key), algstr));
 

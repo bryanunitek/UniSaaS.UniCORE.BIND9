@@ -42,6 +42,7 @@
 #include <isc/lib.h>
 #include <isc/log.h>
 #include <isc/mem.h>
+#include <isc/parseint.h>
 #include <isc/region.h>
 #include <isc/result.h>
 #include <isc/string.h>
@@ -54,7 +55,6 @@
 #include <dns/lib.h>
 #include <dns/name.h>
 #include <dns/rdataclass.h>
-#include <dns/secalg.h>
 
 #include <dst/dst.h>
 
@@ -81,6 +81,7 @@ struct keygen_ctx {
 	dns_keystore_t *keystore;
 	char *algname;
 	int size;
+	uint16_t flags;
 	uint16_t tag_min;
 	uint16_t tag_max;
 	dns_rdataclass_t rdclass;
@@ -89,6 +90,7 @@ struct keygen_ctx {
 	bool wantzsk;
 	bool wantksk;
 	bool wantrev;
+	bool wantadt;
 	dst_algorithm_t alg;
 	/* timing data */
 	int prepub;
@@ -144,7 +146,8 @@ usage(int ret) {
 	}
 	fprintf(stderr, "        RSASHA256 | RSASHA512 |\n");
 	fprintf(stderr, "        ECDSAP256SHA256 | ECDSAP384SHA384 |\n");
-	fprintf(stderr, "        ED25519 | ED448\n");
+	fprintf(stderr, "        ED25519 | ED448 |\n");
+	fprintf(stderr, "        MLDSA44\n");
 	fprintf(stderr, "    -3: use NSEC3-capable algorithm\n");
 	fprintf(stderr, "    -b <key size in bits>:\n");
 	if (!isc_crypto_fips_mode()) {
@@ -160,11 +163,13 @@ usage(int ret) {
 	fprintf(stderr, "        ECDSAP384SHA384:\tignored\n");
 	fprintf(stderr, "        ED25519:\tignored\n");
 	fprintf(stderr, "        ED448:\tignored\n");
+	fprintf(stderr, "        MLDSA44:\tignored\n");
 	fprintf(stderr, "        (key size defaults are set according to\n"
 			"        algorithm and usage (ZSK or KSK)\n");
 	fprintf(stderr, "    -c <class>: (default: IN)\n");
 	fprintf(stderr, "    -d <digest bits> (0 => max, default)\n");
-	fprintf(stderr, "    -f <keyflag>: ZSK | KSK | REVOKE\n");
+	fprintf(stderr, "    -f <keyflag>: [-]ZSK | [-]KSK | [-]ADT | "
+			"[-]REVOKE\n");
 	fprintf(stderr, "    -F: FIPS mode\n");
 	fprintf(stderr, "    -L <ttl>: default key TTL\n");
 	fprintf(stderr, "    -M <min>:<max>: allowed Key ID range\n");
@@ -230,8 +235,7 @@ progress(int p) {
 static void
 keygen(keygen_ctx_t *ctx, const char *keyname) {
 	char filename[255];
-	char algstr[DNS_SECALG_FORMATSIZE];
-	uint16_t flags = 0;
+	char algstr[DST_ALG_FORMATSIZE];
 	bool conflict = false;
 	bool show_progress = false;
 	isc_buffer_t buf;
@@ -286,6 +290,7 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 			case DST_ALG_ECDSA384:
 			case DST_ALG_ED25519:
 			case DST_ALG_ED448:
+			case DST_ALG_MLDSA44:
 				break;
 			default:
 				fatal("algorithm %s is incompatible with NSEC3"
@@ -320,6 +325,7 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 			case DST_ALG_ECDSA384:
 			case DST_ALG_ED25519:
 			case DST_ALG_ED448:
+			case DST_ALG_MLDSA44:
 				break;
 			default:
 				fatal("key size not specified (-b option)");
@@ -395,7 +401,7 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 		name = dst_key_name(prevkey);
 		ctx->alg = dst_key_alg(prevkey);
 		ctx->size = dst_key_size(prevkey);
-		flags = dst_key_flags(prevkey);
+		ctx->flags = dst_key_flags(prevkey);
 
 		dst_key_format(prevkey, keystr, sizeof(keystr));
 		dst_key_getprivateformat(prevkey, &major, &minor);
@@ -451,7 +457,7 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 	switch (ctx->alg) {
 	case DST_ALG_RSASHA1:
 	case DST_ALG_NSEC3RSASHA1:
-		dns_secalg_format(ctx->alg, algstr, sizeof(algstr));
+		dst_algorithm_format(ctx->alg, algstr, sizeof(algstr));
 		fprintf(stderr,
 			"WARNING: DNSKEY algorithm '%s' is deprecated. Please "
 			"migrate to another algorithm\n",
@@ -490,25 +496,15 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 	case DST_ALG_ED448:
 		ctx->size = 456;
 		break;
+	case DST_ALG_MLDSA44:
+		ctx->size = DNS_KEY_MLDSA44SIZE * 8;
+		break;
 	default:
 		fatal("not a dnskey algorithm %u\n", ctx->alg);
 	}
 
-	if ((ctx->options & DST_TYPE_KEY) == 0) {
-		flags |= DNS_KEYOWNER_ZONE; /* DNSKEY: name type ZONE */
-	}
-
 	if (ctx->directory == NULL) {
 		ctx->directory = ".";
-	}
-
-	if ((flags & DNS_KEYOWNER_ZONE) != 0) { /* DNSKEY */
-		if (ctx->ksk || ctx->wantksk) {
-			flags |= DNS_KEYFLAG_KSK;
-		}
-		if (ctx->wantrev) {
-			flags |= DNS_KEYFLAG_REVOKE;
-		}
 	}
 
 	switch (ctx->alg) {
@@ -523,6 +519,7 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 	case DST_ALG_ECDSA384:
 	case DST_ALG_ED25519:
 	case DST_ALG_ED448:
+	case DST_ALG_MLDSA44:
 		show_progress = true;
 		break;
 	default:
@@ -541,17 +538,18 @@ keygen(keygen_ctx_t *ctx, const char *keyname) {
 		if (ctx->keystore != NULL && ctx->policy != NULL) {
 			result = dns_keystore_keygen(
 				ctx->keystore, name, ctx->policy, ctx->rdclass,
-				isc_g_mctx, ctx->alg, ctx->size, flags, &key);
+				isc_g_mctx, ctx->alg, ctx->size, ctx->flags,
+				&key);
 		} else if (!ctx->quiet && show_progress) {
-			result = dst_key_generate(name, ctx->alg, ctx->size, 0,
-						  flags, DNS_KEYPROTO_DNSSEC,
-						  ctx->rdclass, NULL,
-						  isc_g_mctx, &key, &progress);
+			result = dst_key_generate(
+				name, ctx->alg, ctx->size, 0, ctx->flags,
+				DNS_KEYPROTO_DNSSEC, ctx->rdclass, NULL,
+				isc_g_mctx, &key, &progress);
 		} else {
-			result = dst_key_generate(name, ctx->alg, ctx->size, 0,
-						  flags, DNS_KEYPROTO_DNSSEC,
-						  ctx->rdclass, NULL,
-						  isc_g_mctx, &key, NULL);
+			result = dst_key_generate(
+				name, ctx->alg, ctx->size, 0, ctx->flags,
+				DNS_KEYPROTO_DNSSEC, ctx->rdclass, NULL,
+				isc_g_mctx, &key, NULL);
 		}
 
 		if (!ctx->quiet && show_progress) {
@@ -729,10 +727,10 @@ int
 main(int argc, char **argv) {
 	char *algname = NULL, *freeit = NULL;
 	char *classname = NULL;
-	char *endp;
+	char *endp = NULL;
 	isc_result_t result;
 	isc_textregion_t r;
-	unsigned char c;
+	uint8_t c;
 	int ch;
 
 	keygen_ctx_t ctx = {
@@ -787,8 +785,9 @@ main(int argc, char **argv) {
 			algname = isc_commandline_argument;
 			break;
 		case 'b':
-			ctx.size = strtol(isc_commandline_argument, &endp, 10);
-			if (*endp != '\0' || ctx.size < 0) {
+			result = isc_parse_signed_number(
+				&ctx.size, isc_commandline_argument, 10);
+			if (result != ISC_R_SUCCESS || ctx.size < 0) {
 				fatal("-b requires a non-negative number");
 			}
 			break;
@@ -805,13 +804,15 @@ main(int argc, char **argv) {
 			fatal("%s", isc_result_totext(DST_R_NOENGINE));
 			break;
 		case 'f':
-			c = (unsigned char)(isc_commandline_argument[0]);
+			c = (uint8_t)(isc_commandline_argument[0]);
 			if (toupper(c) == 'K') {
 				ctx.wantksk = true;
 			} else if (toupper(c) == 'Z') {
 				ctx.wantzsk = true;
 			} else if (toupper(c) == 'R') {
 				ctx.wantrev = true;
+			} else if (toupper(c) == 'A') {
+				ctx.wantadt = true;
 			} else {
 				fatal("unknown flag '%s'",
 				      isc_commandline_argument);
@@ -845,8 +846,8 @@ main(int argc, char **argv) {
 			if (*endp != ':' || ul > 0xffff) {
 				fatal("-M range invalid");
 			}
-			ctx.tag_max = ul = strtoul(endp + 1, &endp, 10);
-			if (*endp != '\0' || ul > 0xffff ||
+			result = isc_parse_uint16(&ctx.tag_max, endp + 1, 10);
+			if (result != ISC_R_SUCCESS ||
 			    ctx.tag_max <= ctx.tag_min)
 			{
 				fatal("-M range invalid");
@@ -884,9 +885,9 @@ main(int argc, char **argv) {
 			fatal("The -t option has been deprecated.");
 			break;
 		case 'v':
-			endp = NULL;
-			verbose = strtol(isc_commandline_argument, &endp, 0);
-			if (*endp != '\0') {
+			result = isc_parse_signed_number(
+				&verbose, isc_commandline_argument, 0);
+			if (result != ISC_R_SUCCESS) {
 				fatal("-v must be followed by a number");
 			}
 			break;
@@ -1075,6 +1076,7 @@ main(int argc, char **argv) {
 			ctx.use_nsec3 = false;
 			ctx.alg = DST_ALG_ECDSA256;
 			ctx.size = 0;
+			ctx.flags = DNS_KEYOWNER_ZONE | DNS_KEYFLAG_KSK;
 			ctx.ttl = 3600;
 			ctx.setttl = true;
 			ctx.ksk = true;
@@ -1115,6 +1117,7 @@ main(int argc, char **argv) {
 				ctx.use_nsec3 = false;
 				ctx.alg = dns_kasp_key_algorithm(kaspkey);
 				ctx.size = dns_kasp_key_size(kaspkey);
+				ctx.flags = dns_kasp_key_flags(kaspkey);
 				ctx.ksk = dns_kasp_key_ksk(kaspkey);
 				ctx.zsk = dns_kasp_key_zsk(kaspkey);
 				ctx.lifetime = dns_kasp_key_lifetime(kaspkey);
@@ -1136,6 +1139,22 @@ main(int argc, char **argv) {
 			cfg_obj_detach(&config);
 		}
 	} else {
+		if ((ctx.options & DST_TYPE_KEY) == 0) {
+			ctx.flags |= DNS_KEYOWNER_ZONE; /* DNSKEY: name type
+							   ZONE */
+		}
+		if ((ctx.flags & DNS_KEYOWNER_ZONE) != 0) { /* DNSKEY */
+			if (ctx.ksk || ctx.wantksk) {
+				ctx.flags |= DNS_KEYFLAG_KSK;
+			}
+			if (ctx.wantrev) {
+				ctx.flags |= DNS_KEYFLAG_REVOKE;
+			}
+			if (ctx.wantadt) {
+				ctx.flags |= DNS_KEYFLAG_ADT;
+			}
+		}
+
 		keygen(&ctx, argv[isc_commandline_index]);
 	}
 

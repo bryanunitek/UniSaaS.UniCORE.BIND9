@@ -24,6 +24,7 @@
 #include <dns/stats.h>
 #include <dns/view.h>
 #include <dns/zone.h>
+#include <dns/zonemgr.h>
 #include <dns/zoneproperties.h>
 
 #include "zone_p.h"
@@ -32,10 +33,6 @@ static void
 default_journal(dns_zone_t *zone);
 static void
 zone_namerd_tostr(dns_zone_t *zone, char *buf, size_t length);
-static void
-zone_name_tostr(dns_zone_t *zone, char *buf, size_t length);
-static void
-zone_rdclass_tostr(dns_zone_t *zone, char *buf, size_t length);
 
 static void
 free_rad_rcu(struct rcu_head *rcu_head) {
@@ -50,8 +47,6 @@ free_rad_rcu(struct rcu_head *rcu_head) {
  */
 void
 dns_zone_setclass(dns_zone_t *zone, dns_rdataclass_t rdclass) {
-	char namebuf[1024];
-
 	REQUIRE(DNS_ZONE_VALID(zone));
 	REQUIRE(rdclass != dns_rdataclass_none);
 
@@ -63,18 +58,6 @@ dns_zone_setclass(dns_zone_t *zone, dns_rdataclass_t rdclass) {
 	REQUIRE(zone->rdclass == dns_rdataclass_none ||
 		zone->rdclass == rdclass);
 	zone->rdclass = rdclass;
-
-	if (zone->strnamerd != NULL) {
-		isc_mem_free(zone->mctx, zone->strnamerd);
-	}
-	if (zone->strrdclass != NULL) {
-		isc_mem_free(zone->mctx, zone->strrdclass);
-	}
-
-	zone_namerd_tostr(zone, namebuf, sizeof namebuf);
-	zone->strnamerd = isc_mem_strdup(zone->mctx, namebuf);
-	zone_rdclass_tostr(zone, namebuf, sizeof namebuf);
-	zone->strrdclass = isc_mem_strdup(zone->mctx, namebuf);
 
 	if (dns__zone_inline_secure(zone)) {
 		dns_zone_setclass(zone->raw, rdclass);
@@ -124,8 +107,6 @@ dns_zone_setcheckdstype(dns_zone_t *zone, dns_checkdstype_t checkdstype) {
  */
 void
 dns_zone_settype(dns_zone_t *zone, dns_zonetype_t type) {
-	char namebuf[1024];
-
 	REQUIRE(DNS_ZONE_VALID(zone));
 	REQUIRE(type != dns_zone_none);
 
@@ -136,12 +117,6 @@ dns_zone_settype(dns_zone_t *zone, dns_zonetype_t type) {
 	REQUIRE(zone->type == dns_zone_none || zone->type == type);
 	zone->type = type;
 
-	if (zone->strnamerd != NULL) {
-		isc_mem_free(zone->mctx, zone->strnamerd);
-	}
-
-	zone_namerd_tostr(zone, namebuf, sizeof namebuf);
-	zone->strnamerd = isc_mem_strdup(zone->mctx, namebuf);
 	UNLOCK_ZONE(zone);
 }
 
@@ -225,8 +200,6 @@ dns_zone_getview(dns_zone_t *zone) {
 
 void
 dns_zone_setorigin(dns_zone_t *zone, const dns_name_t *origin) {
-	char namebuf[1024];
-
 	REQUIRE(DNS_ZONE_VALID(zone));
 	REQUIRE(origin != NULL);
 
@@ -237,18 +210,6 @@ dns_zone_setorigin(dns_zone_t *zone, const dns_name_t *origin) {
 		dns_name_init(&zone->origin);
 	}
 	dns_name_dup(origin, zone->mctx, &zone->origin);
-
-	if (zone->strnamerd != NULL) {
-		isc_mem_free(zone->mctx, zone->strnamerd);
-	}
-	if (zone->strname != NULL) {
-		isc_mem_free(zone->mctx, zone->strname);
-	}
-
-	zone_namerd_tostr(zone, namebuf, sizeof namebuf);
-	zone->strnamerd = isc_mem_strdup(zone->mctx, namebuf);
-	zone_name_tostr(zone, namebuf, sizeof namebuf);
-	zone->strname = isc_mem_strdup(zone->mctx, namebuf);
 
 	if (dns__zone_inline_secure(zone)) {
 		dns_zone_setorigin(zone->raw, origin);
@@ -516,7 +477,7 @@ setfilename(dns_zone_t *zone, char **field, const char *value) {
 
 	isc_buffer_init(&b, filename, sizeof(filename));
 	dns_zone_expandzonefile(&b, value, &zone->origin,
-				zone->view != NULL ? zone->view->name : NULL,
+				dns__viewname_get(&zone->viewname),
 				dns_zonetype_name(zone->type));
 	setstring(zone, field, filename);
 }
@@ -630,13 +591,6 @@ dns_zone_getmctx(dns_zone_t *zone) {
 	return zone->mctx;
 }
 
-dns_zonemgr_t *
-dns_zone_getmgr(dns_zone_t *zone) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-
-	return zone->zmgr;
-}
-
 void
 dns_zone_setkasp(dns_zone_t *zone, dns_kasp_t *kasp) {
 	REQUIRE(DNS_ZONE_VALID(zone));
@@ -688,7 +642,7 @@ dns_zone_setxfrsource4(dns_zone_t *zone, const isc_sockaddr_t *xfrsource) {
 	REQUIRE(xfrsource != NULL);
 
 	LOCK_ZONE(zone);
-	zone->xfrsource4 = *xfrsource;
+	zone->xfrsource4 = zone_addr4_fromsockaddr(xfrsource);
 	UNLOCK_ZONE(zone);
 }
 
@@ -698,7 +652,7 @@ dns_zone_getxfrsource4(dns_zone_t *zone, isc_sockaddr_t *xfrsource) {
 	REQUIRE(xfrsource != NULL);
 
 	LOCK_ZONE(zone);
-	*xfrsource = zone->xfrsource4;
+	*xfrsource = zone_addr4_tosockaddr(&zone->xfrsource4);
 	UNLOCK_ZONE(zone);
 }
 
@@ -708,7 +662,7 @@ dns_zone_setxfrsource6(dns_zone_t *zone, const isc_sockaddr_t *xfrsource) {
 	REQUIRE(xfrsource != NULL);
 
 	LOCK_ZONE(zone);
-	zone->xfrsource6 = *xfrsource;
+	zone->xfrsource6 = zone_addr6_fromsockaddr(xfrsource);
 	UNLOCK_ZONE(zone);
 }
 
@@ -718,7 +672,7 @@ dns_zone_getxfrsource6(dns_zone_t *zone, isc_sockaddr_t *xfrsource) {
 	REQUIRE(xfrsource != NULL);
 
 	LOCK_ZONE(zone);
-	*xfrsource = zone->xfrsource6;
+	*xfrsource = zone_addr6_tosockaddr(&zone->xfrsource6);
 	UNLOCK_ZONE(zone);
 }
 
@@ -728,7 +682,7 @@ dns_zone_setparentalsrc4(dns_zone_t *zone, const isc_sockaddr_t *parentalsrc) {
 	REQUIRE(parentalsrc != NULL);
 
 	LOCK_ZONE(zone);
-	zone->parentalsrc4 = *parentalsrc;
+	zone->parentalsrc4 = zone_addr4_fromsockaddr(parentalsrc);
 	UNLOCK_ZONE(zone);
 }
 
@@ -738,7 +692,7 @@ dns_zone_getparentalsrc4(dns_zone_t *zone, isc_sockaddr_t *parentalsrc) {
 	REQUIRE(parentalsrc != NULL);
 
 	LOCK_ZONE(zone);
-	*parentalsrc = zone->parentalsrc4;
+	*parentalsrc = zone_addr4_tosockaddr(&zone->parentalsrc4);
 	UNLOCK_ZONE(zone);
 }
 
@@ -747,7 +701,7 @@ dns_zone_setparentalsrc6(dns_zone_t *zone, const isc_sockaddr_t *parentalsrc) {
 	REQUIRE(DNS_ZONE_VALID(zone));
 
 	LOCK_ZONE(zone);
-	zone->parentalsrc6 = *parentalsrc;
+	zone->parentalsrc6 = zone_addr6_fromsockaddr(parentalsrc);
 	UNLOCK_ZONE(zone);
 }
 
@@ -757,7 +711,7 @@ dns_zone_getparentalsrc6(dns_zone_t *zone, isc_sockaddr_t *parentalsrc) {
 	REQUIRE(parentalsrc != NULL);
 
 	LOCK_ZONE(zone);
-	*parentalsrc = zone->parentalsrc6;
+	*parentalsrc = zone_addr6_tosockaddr(&zone->parentalsrc6);
 	UNLOCK_ZONE(zone);
 }
 
@@ -770,10 +724,10 @@ dns_zone_setnotifysrc4(dns_zone_t *zone, dns_rdatatype_t type,
 	LOCK_ZONE(zone);
 	switch (type) {
 	case dns_rdatatype_soa:
-		zone->notifysoa.notifysrc4 = *notifysrc;
+		zone->notifysoa.notifysrc4 = zone_addr4_fromsockaddr(notifysrc);
 		break;
 	case dns_rdatatype_cds:
-		zone->notifycds.notifysrc4 = *notifysrc;
+		zone->notifycds.notifysrc4 = zone_addr4_fromsockaddr(notifysrc);
 		break;
 	default:
 		UNREACHABLE();
@@ -790,10 +744,10 @@ dns_zone_setnotifysrc6(dns_zone_t *zone, dns_rdatatype_t type,
 	LOCK_ZONE(zone);
 	switch (type) {
 	case dns_rdatatype_soa:
-		zone->notifysoa.notifysrc6 = *notifysrc;
+		zone->notifysoa.notifysrc6 = zone_addr6_fromsockaddr(notifysrc);
 		break;
 	case dns_rdatatype_cds:
-		zone->notifycds.notifysrc6 = *notifysrc;
+		zone->notifycds.notifysrc6 = zone_addr6_fromsockaddr(notifysrc);
 		break;
 	default:
 		UNREACHABLE();
@@ -1270,20 +1224,6 @@ dns_zone_setzeronosoattl(dns_zone_t *zone, bool state) {
 }
 
 void
-dns_zone_setchecknames(dns_zone_t *zone, dns_severity_t severity) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-
-	zone->check_names = severity;
-}
-
-dns_severity_t
-dns_zone_getchecknames(dns_zone_t *zone) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-
-	return zone->check_names;
-}
-
-void
 dns_zone_setjournalsize(dns_zone_t *zone, int32_t size) {
 	REQUIRE(DNS_ZONE_VALID(zone));
 
@@ -1327,12 +1267,12 @@ zone_namerd_tostr(dns_zone_t *zone, char *buf, size_t length) {
 		(void)dns_rdataclass_totext(zone->rdclass, &buffer);
 	}
 
-	if (zone->view != NULL && strcmp(zone->view->name, "_bind") != 0 &&
-	    strcmp(zone->view->name, "_default") != 0 &&
-	    strlen(zone->view->name) < isc_buffer_availablelength(&buffer))
+	const char *viewname = dns__viewname_display(&zone->viewname);
+	if (viewname != NULL &&
+	    strlen(viewname) < isc_buffer_availablelength(&buffer))
 	{
 		isc_buffer_putstr(&buffer, "/");
-		isc_buffer_putstr(&buffer, zone->view->name);
+		isc_buffer_putstr(&buffer, viewname);
 	}
 	if (dns__zone_inline_secure(zone) &&
 	    9U < isc_buffer_availablelength(&buffer))
@@ -1348,11 +1288,22 @@ zone_namerd_tostr(dns_zone_t *zone, char *buf, size_t length) {
 	buf[isc_buffer_usedlength(&buffer)] = '\0';
 }
 
-static void
-zone_name_tostr(dns_zone_t *zone, char *buf, size_t length) {
+void
+dns_zone_name(dns_zone_t *zone, char *buf, size_t length) {
+	REQUIRE(DNS_ZONE_VALID(zone));
+	REQUIRE(buf != NULL);
+
+	LOCK_ZONE(zone);
+	zone_namerd_tostr(zone, buf, length);
+	UNLOCK_ZONE(zone);
+}
+
+void
+dns_zone_nameonly(dns_zone_t *zone, char *buf, size_t length) {
 	isc_result_t result = ISC_R_FAILURE;
 	isc_buffer_t buffer;
 
+	REQUIRE(DNS_ZONE_VALID(zone));
 	REQUIRE(buf != NULL);
 	REQUIRE(length > 1U);
 
@@ -1371,39 +1322,6 @@ zone_name_tostr(dns_zone_t *zone, char *buf, size_t length) {
 	}
 
 	buf[isc_buffer_usedlength(&buffer)] = '\0';
-}
-
-static void
-zone_rdclass_tostr(dns_zone_t *zone, char *buf, size_t length) {
-	isc_buffer_t buffer;
-
-	REQUIRE(buf != NULL);
-	REQUIRE(length > 1U);
-
-	/*
-	 * Leave space for terminating '\0'.
-	 */
-	isc_buffer_init(&buffer, buf, (unsigned int)length - 1);
-	(void)dns_rdataclass_totext(zone->rdclass, &buffer);
-
-	buf[isc_buffer_usedlength(&buffer)] = '\0';
-}
-
-void
-dns_zone_name(dns_zone_t *zone, char *buf, size_t length) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-	REQUIRE(buf != NULL);
-
-	LOCK_ZONE(zone);
-	zone_namerd_tostr(zone, buf, length);
-	UNLOCK_ZONE(zone);
-}
-
-void
-dns_zone_nameonly(dns_zone_t *zone, char *buf, size_t length) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-	REQUIRE(buf != NULL);
-	zone_name_tostr(zone, buf, length);
 }
 
 void
@@ -1582,7 +1500,7 @@ dns_zone_getsourceaddr(dns_zone_t *zone, isc_sockaddr_t *sourceaddr) {
 
 	LOCK_ZONE(zone);
 	INSIST(dns_remote_count(&zone->primaries) > 0);
-	*sourceaddr = zone->sourceaddr;
+	*sourceaddr = zone_addr_tosockaddr(&zone->sourceaddr);
 	UNLOCK_ZONE(zone);
 }
 
@@ -1723,36 +1641,52 @@ dns_zone_getkeydirectory(dns_zone_t *zone) {
 }
 
 void
-dns_zone_setcheckmx(dns_zone_t *zone, dns_checkmxfunc_t checkmx) {
+dns_zone_setops(dns_zone_t *zone, const dns_zone_ops_t *ops) {
 	REQUIRE(DNS_ZONE_VALID(zone));
-	zone->checkmx = checkmx;
+	REQUIRE(ops != NULL);
+	REQUIRE(zone->ops == NULL || zone->ops == ops);
+
+	zone->ops = ops;
 }
 
 void
-dns_zone_setchecksrv(dns_zone_t *zone, dns_checksrvfunc_t checksrv) {
+dns_zone_setcheckmx(dns_zone_t *zone, bool enabled) {
 	REQUIRE(DNS_ZONE_VALID(zone));
-	zone->checksrv = checksrv;
-}
-
-void
-dns_zone_setcheckns(dns_zone_t *zone, dns_checknsfunc_t checkns) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-	zone->checkns = checkns;
-}
-
-void
-dns_zone_setcheckisservedby(dns_zone_t *zone,
-			    dns_checkisservedbyfunc_t checkisservedby) {
-	REQUIRE(DNS_ZONE_VALID(zone));
-	zone->checkisservedby = checkisservedby;
-}
-
-void
-dns_zone_setisself(dns_zone_t *zone, dns_isselffunc_t isself, void *arg) {
-	REQUIRE(DNS_ZONE_VALID(zone));
+	REQUIRE(!enabled || (zone->ops != NULL && zone->ops->checkmx != NULL));
 
 	LOCK_ZONE(zone);
-	zone->isself = isself;
+	zone->checkmx = enabled;
+	UNLOCK_ZONE(zone);
+}
+
+void
+dns_zone_setchecksrv(dns_zone_t *zone, bool enabled) {
+	REQUIRE(DNS_ZONE_VALID(zone));
+	REQUIRE(!enabled || (zone->ops != NULL && zone->ops->checksrv != NULL));
+
+	LOCK_ZONE(zone);
+	zone->checksrv = enabled;
+	UNLOCK_ZONE(zone);
+}
+
+void
+dns_zone_setcheckns(dns_zone_t *zone, bool enabled) {
+	REQUIRE(DNS_ZONE_VALID(zone));
+	REQUIRE(!enabled || (zone->ops != NULL && zone->ops->checkns != NULL &&
+			     zone->ops->checkisservedby != NULL));
+
+	LOCK_ZONE(zone);
+	zone->checkns = enabled;
+	UNLOCK_ZONE(zone);
+}
+
+void
+dns_zone_setisself(dns_zone_t *zone, bool enabled, void *arg) {
+	REQUIRE(DNS_ZONE_VALID(zone));
+	REQUIRE(!enabled || (zone->ops != NULL && zone->ops->isself != NULL));
+
+	LOCK_ZONE(zone);
+	zone->isself = enabled;
 	zone->isselfarg = arg;
 	UNLOCK_ZONE(zone);
 }
@@ -1763,7 +1697,7 @@ dns__zone_getisself(dns_zone_t *zone, dns_isselffunc_t *isself, void **arg) {
 	REQUIRE(isself != NULL);
 	REQUIRE(arg != NULL && *arg == NULL);
 
-	*isself = zone->isself;
+	*isself = zone->isself ? zone->ops->isself : NULL;
 	*arg = zone->isselfarg;
 }
 
@@ -1778,7 +1712,7 @@ dns_zone_setnotifydefer(dns_zone_t *zone, dns_rdatatype_t type,
 		zone->notifysoa.notifydefer = defer;
 		break;
 	case dns_rdatatype_cds:
-		/* not applicable to NOTIFY(CDS), unused */
+		/* Not applicable to NOTIFY(CDS), unused. */
 		zone->notifycds.notifydefer = defer;
 		break;
 	default:
@@ -1798,7 +1732,7 @@ dns_zone_setnotifydelay(dns_zone_t *zone, dns_rdatatype_t type,
 		zone->notifysoa.notifydelay = delay;
 		break;
 	case dns_rdatatype_cds:
-		/* not applicable to NOTIFY(CDS), unused */
+		/* Not applicable to NOTIFY(CDS), unused. */
 		zone->notifycds.notifydelay = delay;
 		break;
 	default:
@@ -2045,7 +1979,7 @@ dns_zone_getrad(dns_zone_t *zone, dns_name_t *name) {
 	rcu_read_lock();
 	dns_rad_t *rad = rcu_dereference(zone->rad);
 	if (rad != NULL) {
-		dns_name_t *inner = dns_fixedname_name(&rad->fname);
+		dns_name_t *inner = dns_name(&rad->fname);
 		dns_name_copy(inner, name);
 		result = ISC_R_SUCCESS;
 	}
@@ -2067,7 +2001,7 @@ dns_zone_setrad(dns_zone_t *zone, dns_name_t *name) {
 		dns_fixedname_init(&new_rad->fname);
 
 		isc_mem_attach(zone->mctx, &new_rad->mctx);
-		dns_name_copy(name, dns_fixedname_name(&new_rad->fname));
+		dns_name_copy(name, dns_name(&new_rad->fname));
 	}
 	dns_rad_t *xchg_rad = rcu_xchg_pointer(&zone->rad, new_rad);
 
@@ -2084,14 +2018,12 @@ dns_zone_gethooktable(dns_zone_t *zone) {
 }
 
 void
-dns_zone_sethooktable(dns_zone_t *zone, void *hooktable,
-		      void (*hooktable_free)(isc_mem_t *, void **)) {
+dns_zone_sethooktable(dns_zone_t *zone, void *hooktable) {
 	REQUIRE(DNS_ZONE_VALID(zone));
 	REQUIRE(zone->hooktable == NULL);
-	REQUIRE(zone->hooktable_free == NULL);
+	REQUIRE(zone->ops != NULL && zone->ops->hooktable_free != NULL);
 
 	zone->hooktable = hooktable;
-	zone->hooktable_free = hooktable_free;
 }
 
 void
@@ -2171,7 +2103,8 @@ dns_zone_getrequesttransporttype(dns_zone_t *zone) {
 
 dns_keystorelist_t *
 dns_zone_getkeystores(dns_zone_t *zone) {
-	return zone->zmgr->keystores;
+	REQUIRE(DNS_ZONE_VALID(zone));
+	return dns_g_zonemgr->keystores;
 }
 
 isc_stats_t *

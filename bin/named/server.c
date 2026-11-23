@@ -114,6 +114,7 @@
 
 #include <isccfg/cfg.h>
 #include <isccfg/check.h>
+#include <isccfg/clause.h>
 #include <isccfg/grammar.h>
 #include <isccfg/kaspconf.h>
 #include <isccfg/namedconf.h>
@@ -475,7 +476,8 @@ configure_newzones(dns_view_t *view, cfg_obj_t *config, cfg_obj_t *vconfig,
 		   cfg_aclconfctx_t *aclctx, dns_kasplist_t *kasplist);
 
 static const cfg_obj_t *
-find_maplist(const cfg_obj_t *config, const char *listname, const char *name);
+find_maplist(const cfg_obj_t *config, enum cfg_clause listname,
+	     const char *name);
 
 static isc_result_t
 add_keydata_zone(dns_view_t *view, const char *directory, isc_mem_t *mctx);
@@ -498,7 +500,7 @@ putnull(isc_buffer_t *b);
  */
 static isc_result_t
 configure_view_acl(const cfg_obj_t *vconfig, const cfg_obj_t *config,
-		   const char *aclname, const char *acltuplename,
+		   enum cfg_clause aclname, const char *acltuplename,
 		   cfg_aclconfctx_t *aclctx, isc_mem_t *mctx,
 		   dns_acl_t **aclp) {
 	isc_result_t result;
@@ -514,7 +516,7 @@ configure_view_acl(const cfg_obj_t *vconfig, const cfg_obj_t *config,
 	}
 	if (config != NULL) {
 		const cfg_obj_t *options = NULL;
-		(void)cfg_map_get(config, "options", &options);
+		(void)cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 		if (options != NULL) {
 			maps[i++] = options;
 		}
@@ -545,7 +547,7 @@ configure_view_acl(const cfg_obj_t *vconfig, const cfg_obj_t *config,
 
 static isc_result_t
 configure_view_nametable(const cfg_obj_t *vconfig, const cfg_obj_t *config,
-			 const char *confname, const char *conftuplename,
+			 enum cfg_clause confname, const char *conftuplename,
 			 isc_mem_t *mctx, dns_nametree_t **ntp) {
 	isc_result_t result = ISC_R_SUCCESS;
 	const cfg_obj_t *maps[3];
@@ -560,14 +562,15 @@ configure_view_nametable(const cfg_obj_t *vconfig, const cfg_obj_t *config,
 	if (*ntp != NULL) {
 		dns_nametree_detach(ntp);
 	}
-	dns_nametree_create(mctx, DNS_NAMETREE_BOOL, confname, ntp);
+	dns_nametree_create(mctx, DNS_NAMETREE_BOOL,
+			    cfg_clause_as_string[confname], ntp);
 
 	if (vconfig != NULL) {
 		maps[i++] = cfg_tuple_get(vconfig, "options");
 	}
 	if (config != NULL) {
 		const cfg_obj_t *options = NULL;
-		(void)cfg_map_get(config, "options", &options);
+		(void)cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 		if (options != NULL) {
 			maps[i++] = options;
 		}
@@ -600,7 +603,8 @@ configure_view_nametable(const cfg_obj_t *vconfig, const cfg_obj_t *config,
 		if (result != ISC_R_SUCCESS) {
 			cfg_obj_log(nameobj, ISC_LOG_ERROR,
 				    "failed to add %s for %s: %s", str,
-				    confname, isc_result_totext(result));
+				    cfg_clause_as_string[confname],
+				    isc_result_totext(result));
 			goto cleanup;
 		}
 	}
@@ -1059,16 +1063,16 @@ configure_view_dnsseckeys(dns_view_t *view, const cfg_obj_t *vconfig,
 	if (vconfig != NULL) {
 		voptions = cfg_tuple_get(vconfig, "options");
 		if (voptions != NULL) {
-			(void)cfg_map_get(voptions, "trust-anchors",
+			(void)cfg_map_get(voptions, CFG_CLAUSE_TRUST_ANCHORS,
 					  &view_trust_anchors);
 			maps[i++] = voptions;
 		}
 	}
 
 	if (config != NULL) {
-		(void)cfg_map_get(config, "trust-anchors",
+		(void)cfg_map_get(config, CFG_CLAUSE_TRUST_ANCHORS,
 				  &global_trust_anchors);
-		(void)cfg_map_get(config, "options", &options);
+		(void)cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 		if (options != NULL) {
 			maps[i++] = options;
 		}
@@ -1095,7 +1099,7 @@ configure_view_dnsseckeys(dns_view_t *view, const cfg_obj_t *vconfig,
 				      "from '%s'",
 				      view->name, named_g_bindkeysfile);
 
-			CHECK(cfg_map_get(bindkeys, "trust-anchors",
+			CHECK(cfg_map_get(bindkeys, CFG_CLAUSE_TRUST_ANCHORS,
 					  &builtin_keys));
 
 			if (builtin_keys == NULL) {
@@ -1114,7 +1118,8 @@ configure_view_dnsseckeys(dns_view_t *view, const cfg_obj_t *vconfig,
 				      "using built-in root key for view %s",
 				      view->name);
 
-			CHECK(cfg_map_get(config, "builtin-trust-anchors",
+			CHECK(cfg_map_get(config,
+					  CFG_CLAUSE_BUILTIN_TRUST_ANCHORS,
 					  &builtin_keys));
 		}
 
@@ -1140,7 +1145,7 @@ configure_view_dnsseckeys(dns_view_t *view, const cfg_obj_t *vconfig,
 	 * Add key zone for managed keys.
 	 */
 	obj = NULL;
-	(void)named_config_get(maps, "managed-keys-directory", &obj);
+	(void)named_config_get(maps, CFG_CLAUSE_MANAGED_KEYS_DIRECTORY, &obj);
 	directory = (obj != NULL ? cfg_obj_asstring(obj) : NULL);
 	if (directory != NULL) {
 		result = isc_file_isdirectory(directory);
@@ -1183,11 +1188,12 @@ get_view_querysource_dispatch(const cfg_obj_t **maps, int af,
 
 	switch (af) {
 	case AF_INET:
-		result = named_config_get(maps, "query-source", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_QUERY_SOURCE, &obj);
 		INSIST(result == ISC_R_SUCCESS);
 		break;
 	case AF_INET6:
-		result = named_config_get(maps, "query-source-v6", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_QUERY_SOURCE_V6,
+					  &obj);
 		INSIST(result == ISC_R_SUCCESS);
 		break;
 	default:
@@ -1286,8 +1292,7 @@ configure_order(dns_order_t *order, const cfg_obj_t *ent) {
 	isc_buffer_constinit(&b, str, strlen(str));
 	isc_buffer_add(&b, strlen(str));
 	dns_fixedname_init(&fixed);
-	RETERR(dns_name_fromtext(dns_fixedname_name(&fixed), &b, dns_rootname,
-				 0));
+	RETERR(dns_name_fromtext(dns_name(&fixed), &b, dns_rootname, 0));
 
 	obj = cfg_tuple_get(ent, "ordering");
 	INSIST(cfg_obj_isstring(obj));
@@ -1314,7 +1319,7 @@ configure_order(dns_order_t *order, const cfg_obj_t *ent) {
 		dns_order_add(order, dns_rootname, rdtype, rdclass, mode);
 	}
 
-	dns_order_add(order, dns_fixedname_name(&fixed), rdtype, rdclass, mode);
+	dns_order_add(order, dns_name(&fixed), rdtype, rdclass, mode);
 
 	return ISC_R_SUCCESS;
 }
@@ -1332,115 +1337,115 @@ configure_peer(const cfg_obj_t *cpeer, isc_mem_t *mctx, dns_peer_t **peerp) {
 	RETERR(dns_peer_newprefix(mctx, &na, prefixlen, &peer));
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "bogus", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_BOGUS, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setbogus(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "provide-ixfr", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_PROVIDE_IXFR, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setprovideixfr(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "request-expire", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_REQUEST_EXPIRE, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setrequestexpire(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "request-ixfr", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_REQUEST_IXFR, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setrequestixfr(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "request-ixfr-max-diffs", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_REQUEST_IXFR_MAX_DIFFS, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setrequestixfrmaxdiffs(peer,
 						      cfg_obj_asuint32(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "request-nsid", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_REQUEST_NSID, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setrequestnsid(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "request-zoneversion", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_REQUEST_ZONEVERSION, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setrequestzoneversion(peer,
 						     cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "send-cookie", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_SEND_COOKIE, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setsendcookie(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "require-cookie", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_REQUIRE_COOKIE, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setrequirecookie(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "edns", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_EDNS, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setsupportedns(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "edns-udp-size", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_EDNS_UDP_SIZE, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setudpsize(peer,
 					  (uint16_t)cfg_obj_asuint32(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "edns-version", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_EDNS_VERSION, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setednsversion(peer,
 					      (uint8_t)cfg_obj_asuint32(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "max-udp-size", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_MAX_UDP_SIZE, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setmaxudp(peer,
 					 (uint16_t)cfg_obj_asuint32(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "padding", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_PADDING, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setpadding(peer,
 					  (uint16_t)cfg_obj_asuint32(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "tcp-only", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_TCP_ONLY, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setforcetcp(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "tcp-keepalive", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_TCP_KEEPALIVE, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_settcpkeepalive(peer, cfg_obj_asboolean(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "transfers", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_TRANSFERS, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_settransfers(peer, cfg_obj_asuint32(obj)));
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "transfer-format", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_TRANSFER_FORMAT, &obj);
 	if (obj != NULL) {
 		const char *str = cfg_obj_asstring(obj);
 		if (strcasecmp(str, "many-answers") == 0) {
@@ -1454,16 +1459,16 @@ configure_peer(const cfg_obj_t *cpeer, isc_mem_t *mctx, dns_peer_t **peerp) {
 	}
 
 	obj = NULL;
-	(void)cfg_map_get(cpeer, "keys", &obj);
+	(void)cfg_map_get(cpeer, CFG_CLAUSE_KEYS, &obj);
 	if (obj != NULL) {
 		CHECK(dns_peer_setkeybycharp(peer, cfg_obj_asstring(obj)));
 	}
 
 	obj = NULL;
 	if (na.family == AF_INET) {
-		(void)cfg_map_get(cpeer, "transfer-source", &obj);
+		(void)cfg_map_get(cpeer, CFG_CLAUSE_TRANSFER_SOURCE, &obj);
 	} else {
-		(void)cfg_map_get(cpeer, "transfer-source-v6", &obj);
+		(void)cfg_map_get(cpeer, CFG_CLAUSE_TRANSFER_SOURCE_V6, &obj);
 	}
 	if (obj != NULL) {
 		CHECK(dns_peer_settransfersource(peer,
@@ -1472,9 +1477,9 @@ configure_peer(const cfg_obj_t *cpeer, isc_mem_t *mctx, dns_peer_t **peerp) {
 
 	obj = NULL;
 	if (na.family == AF_INET) {
-		(void)cfg_map_get(cpeer, "notify-source", &obj);
+		(void)cfg_map_get(cpeer, CFG_CLAUSE_NOTIFY_SOURCE, &obj);
 	} else {
-		(void)cfg_map_get(cpeer, "notify-source-v6", &obj);
+		(void)cfg_map_get(cpeer, CFG_CLAUSE_NOTIFY_SOURCE_V6, &obj);
 	}
 	if (obj != NULL) {
 		CHECK(dns_peer_setnotifysource(peer, cfg_obj_assockaddr(obj)));
@@ -1482,9 +1487,9 @@ configure_peer(const cfg_obj_t *cpeer, isc_mem_t *mctx, dns_peer_t **peerp) {
 
 	obj = NULL;
 	if (na.family == AF_INET) {
-		(void)cfg_map_get(cpeer, "query-source", &obj);
+		(void)cfg_map_get(cpeer, CFG_CLAUSE_QUERY_SOURCE, &obj);
 	} else {
-		(void)cfg_map_get(cpeer, "query-source-v6", &obj);
+		(void)cfg_map_get(cpeer, CFG_CLAUSE_QUERY_SOURCE_V6, &obj);
 	}
 	if (obj != NULL) {
 		INSIST(cfg_obj_issockaddr(obj));
@@ -1512,7 +1517,7 @@ configure_dyndb(const cfg_obj_t *dyndb, isc_mem_t *mctx,
 
 	obj = cfg_tuple_get(dyndb, "parameters");
 	if (obj != NULL) {
-		result = dns_dyndb_load(library, name, cfg_obj_asstring(obj),
+		result = dns_dyndb_load(library, name, cfg_obj_astokens(obj),
 					cfg_obj_file(obj), cfg_obj_line(obj),
 					mctx, dctx);
 	}
@@ -1736,7 +1741,6 @@ dlzconfigure_callback(dns_view_t *view, dns_dlzdb_t *dlzdb, dns_zone_t *zone) {
 	dns_rdataclass_t zclass = view->rdclass;
 
 	dns_zone_setclass(zone, zclass);
-	RETERR(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
 
 	dns_zone_setstats(zone, named_g_server->zonestats);
 
@@ -1792,10 +1796,9 @@ dns64_reverse(dns_view_t *view, isc_mem_t *mctx, isc_netaddr_t *na,
 	isc_buffer_constinit(&b, reverse, strlen(reverse));
 	isc_buffer_add(&b, strlen(reverse));
 	CHECK(dns_name_fromtext(name, &b, dns_rootname, 0));
-	dns_zone_create(&zone, mctx, 0);
+	CHECK(dns_zonemgr_createzone(named_g_server->zonemgr, &zone));
 	dns_zone_setorigin(zone, name);
 	dns_zone_setview(zone, view);
-	CHECK(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
 	dns_zone_setclass(zone, view->rdclass);
 	dns_zone_settype(zone, dns_zone_primary);
 	dns_zone_setstats(zone, named_g_server->zonestats);
@@ -1809,7 +1812,7 @@ dns64_reverse(dns_view_t *view, isc_mem_t *mctx, isc_netaddr_t *na,
 	dns_zone_setcheckdstype(zone, dns_checkdstype_no);
 	dns_zone_setnotifytype(zone, dns_rdatatype_soa, dns_notifytype_no);
 	dns_zone_setnotifytype(zone, dns_rdatatype_cds, dns_notifytype_no);
-	dns_zone_setoption(zone, DNS_ZONEOPT_NOCHECKNS, true);
+	dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, false);
 	setquerystats(zone, mctx, dns_zonestat_none);
 	CHECK(dns_view_addzone(view, zone));
 	isc_log_write(NAMED_LOGCATEGORY_GENERAL, NAMED_LOGMODULE_SERVER,
@@ -2335,7 +2338,7 @@ catz_addmodzone_cb(void *arg) {
 		goto cleanup;
 	}
 	isc_buffer_free(&confbuf);
-	CHECK(cfg_map_get(zoneconf, "zone", &zlist));
+	CHECK(cfg_map_get(zoneconf, CFG_CLAUSE_ZONE, &zlist));
 	if (!cfg_obj_islist(zlist)) {
 		CLEANUP(ISC_R_FAILURE);
 	}
@@ -2607,7 +2610,7 @@ catz_reconfigure(dns_catz_entry_t *entry, void *arg1, void *arg2) {
 		goto cleanup;
 	}
 
-	CHECK(cfg_map_get(zoneconf, "zone", &zlist));
+	CHECK(cfg_map_get(zoneconf, CFG_CLAUSE_ZONE, &zlist));
 	if (!cfg_obj_islist(zlist)) {
 		CLEANUP(ISC_R_FAILURE);
 	}
@@ -2822,19 +2825,24 @@ cleanup:
 		}                                                         \
 	} while (0)
 
-#define CHECK_RRL_RATE(rate, def, max_rate, name)                           \
-	do {                                                                \
-		obj = NULL;                                                 \
-		rrl->rate.str = name;                                       \
-		result = cfg_map_get(map, name, &obj);                      \
-		if (result == ISC_R_SUCCESS) {                              \
-			rrl->rate.r = cfg_obj_asuint32(obj);                \
-			CHECK_RRL(rrl->rate.r <= max_rate, name " %d > %d", \
-				  rrl->rate.r, max_rate);                   \
-		} else {                                                    \
-			rrl->rate.r = def;                                  \
-		}                                                           \
-		rrl->rate.scaled = rrl->rate.r;                             \
+#define CHECK_RRL_RATE(rate, def, max_rate, name)                             \
+	do {                                                                  \
+		obj = NULL;                                                   \
+		rrl->rate.str = cfg_clause_as_string[name];                   \
+		result = cfg_map_get(map, name, &obj);                        \
+		if (result == ISC_R_SUCCESS) {                                \
+			rrl->rate.r = cfg_obj_asuint32(obj);                  \
+			if (!(rrl->rate.r <= max_rate)) {                     \
+				cfg_obj_log(obj, ISC_LOG_ERROR, "%s %d > %d", \
+					    cfg_clause_as_string[name],       \
+					    rrl->rate.r, max_rate);           \
+				result = ISC_R_RANGE;                         \
+				goto cleanup;                                 \
+			}                                                     \
+		} else {                                                      \
+			rrl->rate.r = def;                                    \
+		}                                                             \
+		rrl->rate.scaled = rrl->rate.r;                               \
 	} while (0)
 
 static isc_result_t
@@ -2853,7 +2861,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 	 */
 	min_entries = 500;
 	obj = NULL;
-	result = cfg_map_get(map, "min-table-size", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_MIN_TABLE_SIZE, &obj);
 	if (result == ISC_R_SUCCESS) {
 		min_entries = cfg_obj_asuint32(obj);
 		if (min_entries < 1) {
@@ -2864,7 +2872,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 
 	i = ISC_MAX(20000, min_entries);
 	obj = NULL;
-	result = cfg_map_get(map, "max-table-size", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_MAX_TABLE_SIZE, &obj);
 	if (result == ISC_R_SUCCESS) {
 		i = cfg_obj_asuint32(obj);
 		CHECK_RRL(i >= min_entries,
@@ -2874,23 +2882,24 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 	rrl->max_entries = i;
 
 	CHECK_RRL_RATE(responses_per_second, 0, DNS_RRL_MAX_RATE,
-		       "responses-per-second");
+		       CFG_CLAUSE_RESPONSES_PER_SECOND);
 	CHECK_RRL_RATE(referrals_per_second, rrl->responses_per_second.r,
-		       DNS_RRL_MAX_RATE, "referrals-per-second");
+		       DNS_RRL_MAX_RATE, CFG_CLAUSE_REFERRALS_PER_SECOND);
 	CHECK_RRL_RATE(nodata_per_second, rrl->responses_per_second.r,
-		       DNS_RRL_MAX_RATE, "nodata-per-second");
+		       DNS_RRL_MAX_RATE, CFG_CLAUSE_NODATA_PER_SECOND);
 	CHECK_RRL_RATE(nxdomains_per_second, rrl->responses_per_second.r,
-		       DNS_RRL_MAX_RATE, "nxdomains-per-second");
+		       DNS_RRL_MAX_RATE, CFG_CLAUSE_NXDOMAINS_PER_SECOND);
 	CHECK_RRL_RATE(errors_per_second, rrl->responses_per_second.r,
-		       DNS_RRL_MAX_RATE, "errors-per-second");
+		       DNS_RRL_MAX_RATE, CFG_CLAUSE_ERRORS_PER_SECOND);
 
-	CHECK_RRL_RATE(all_per_second, 0, DNS_RRL_MAX_RATE, "all-per-second");
+	CHECK_RRL_RATE(all_per_second, 0, DNS_RRL_MAX_RATE,
+		       CFG_CLAUSE_ALL_PER_SECOND);
 
-	CHECK_RRL_RATE(slip, 2, DNS_RRL_MAX_SLIP, "slip");
+	CHECK_RRL_RATE(slip, 2, DNS_RRL_MAX_SLIP, CFG_CLAUSE_SLIP);
 
 	i = 15;
 	obj = NULL;
-	result = cfg_map_get(map, "window", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_WINDOW, &obj);
 	if (result == ISC_R_SUCCESS) {
 		i = cfg_obj_asuint32(obj);
 		CHECK_RRL(i >= 1 && i <= DNS_RRL_MAX_WINDOW,
@@ -2900,7 +2909,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 
 	i = 0;
 	obj = NULL;
-	result = cfg_map_get(map, "qps-scale", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_QPS_SCALE, &obj);
 	if (result == ISC_R_SUCCESS) {
 		i = cfg_obj_asuint32(obj);
 		CHECK_RRL(i >= 1, "invalid 'qps-scale %d'%s", i, "");
@@ -2910,7 +2919,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 
 	i = 24;
 	obj = NULL;
-	result = cfg_map_get(map, "ipv4-prefix-length", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_IPV4_PREFIX_LENGTH, &obj);
 	if (result == ISC_R_SUCCESS) {
 		i = cfg_obj_asuint32(obj);
 		CHECK_RRL(i >= 8 && i <= 32,
@@ -2925,7 +2934,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 
 	i = 56;
 	obj = NULL;
-	result = cfg_map_get(map, "ipv6-prefix-length", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_IPV6_PREFIX_LENGTH, &obj);
 	if (result == ISC_R_SUCCESS) {
 		i = cfg_obj_asuint32(obj);
 		CHECK_RRL(i >= 16 && i <= DNS_RRL_MAX_PREFIX,
@@ -2945,7 +2954,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 	}
 
 	obj = NULL;
-	result = cfg_map_get(map, "exempt-clients", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_EXEMPT_CLIENTS, &obj);
 	if (result == ISC_R_SUCCESS) {
 		result = cfg_acl_fromconfig(obj, config, aclctx, isc_g_mctx, 0,
 					    &rrl->exempt);
@@ -2954,7 +2963,7 @@ configure_rrl(dns_view_t *view, const cfg_obj_t *config, const cfg_obj_t *map,
 	}
 
 	obj = NULL;
-	result = cfg_map_get(map, "log-only", &obj);
+	result = cfg_map_get(map, CFG_CLAUSE_LOG_ONLY, &obj);
 	if (result == ISC_R_SUCCESS && cfg_obj_asboolean(obj)) {
 		rrl->log_only = true;
 	} else {
@@ -3070,9 +3079,9 @@ create_empty_zone(dns_zone_t *pzone, dns_name_t *name, dns_view_t *view,
 	contact = dns_fixedname_initname(&cfixed);
 
 	if (voptions != NULL) {
-		(void)cfg_map_get(voptions, "zone", &zonelist);
+		(void)cfg_map_get(voptions, CFG_CLAUSE_ZONE, &zonelist);
 	} else {
-		(void)cfg_map_get(config, "zone", &zonelist);
+		(void)cfg_map_get(config, CFG_CLAUSE_ZONE, &zonelist);
 	}
 	/*
 	 * Look for forward "zones" beneath this empty zone and if so
@@ -3093,13 +3102,14 @@ create_empty_zone(dns_zone_t *pzone, dns_name_t *name, dns_view_t *view,
 		toptions = named_zone_templateopts(config, zoptions);
 
 		obj = NULL;
-		(void)named_config_findopt(zoptions, toptions, "type", &obj);
+		(void)named_config_findopt(zoptions, toptions, CFG_CLAUSE_TYPE,
+					   &obj);
 		if (obj != NULL &&
 		    strcasecmp(cfg_obj_asstring(obj), "forward") == 0)
 		{
 			obj = NULL;
 			(void)named_config_findopt(zoptions, toptions,
-						   "forward", &obj);
+						   CFG_CLAUSE_FORWARD, &obj);
 			if (obj == NULL) {
 				continue;
 			}
@@ -3167,7 +3177,6 @@ create_empty_zone(dns_zone_t *pzone, dns_name_t *name, dns_view_t *view,
 	if (pzone == NULL) {
 		CHECK(dns_zonemgr_createzone(named_g_server->zonemgr, &zone));
 		dns_zone_setorigin(zone, name);
-		CHECK(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
 		if (db == NULL) {
 			dns_zone_setdbtype(zone, empty_dbtypec, empty_dbtype);
 		}
@@ -3178,8 +3187,7 @@ create_empty_zone(dns_zone_t *pzone, dns_name_t *name, dns_view_t *view,
 		dns_zone_attach(pzone, &zone);
 	}
 
-	dns_zone_setoption(zone, ~DNS_ZONEOPT_NOCHECKNS, false);
-	dns_zone_setoption(zone, DNS_ZONEOPT_NOCHECKNS, true);
+	dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, false);
 	dns_zone_setoption(zone, DNS_ZONEOPT_ZONEVERSION, false);
 	dns_zone_setcheckdstype(zone, dns_checkdstype_no);
 	dns_zone_setnotifytype(zone, dns_rdatatype_soa, dns_notifytype_no);
@@ -3238,7 +3246,7 @@ cleanup:
 
 static isc_result_t
 create_ipv4only_zone(dns_zone_t *pzone, dns_view_t *view,
-		     const dns_name_t *name, const char *type, isc_mem_t *mctx,
+		     const dns_name_t *name, const char *type,
 		     const char *server, const char *contact) {
 	char namebuf[DNS_NAME_FORMATSIZE];
 	const char *dbtype[4] = { "_builtin", NULL, "@", "." };
@@ -3274,9 +3282,8 @@ create_ipv4only_zone(dns_zone_t *pzone, dns_view_t *view,
 		/*
 		 * Create the actual zone.
 		 */
-		dns_zone_create(&zone, mctx, 0);
+		CHECK(dns_zonemgr_createzone(named_g_server->zonemgr, &zone));
 		dns_zone_setorigin(zone, name);
-		CHECK(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
 		dns_zone_setclass(zone, view->rdclass);
 		dns_zone_settype(zone, dns_zone_primary);
 		dns_zone_setstats(zone, named_g_server->zonestats);
@@ -3287,7 +3294,7 @@ create_ipv4only_zone(dns_zone_t *pzone, dns_view_t *view,
 		dns_zone_setnotifytype(zone, dns_rdatatype_cds,
 				       dns_notifytype_no);
 		dns_zone_setautomatic(zone, true);
-		dns_zone_setoption(zone, DNS_ZONEOPT_NOCHECKNS, true);
+		dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, false);
 	} else {
 		dns_zone_attach(pzone, &zone);
 	}
@@ -3327,7 +3334,7 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 	unsigned int i;
 	struct fstrm_iothr_options *fopt = NULL;
 
-	result = named_config_get(maps, "dnstap", &dlist);
+	result = named_config_get(maps, CFG_CLAUSE_DNSTAP, &dlist);
 	if (result != ISC_R_SUCCESS) {
 		return ISC_R_SUCCESS;
 	}
@@ -3379,7 +3386,7 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 		isc_log_rollsuffix_t suffix = isc_log_rollsuffix_increment;
 
 		obj = NULL;
-		CHECKM(named_config_get(maps, "dnstap-output", &obj),
+		CHECKM(named_config_get(maps, CFG_CLAUSE_DNSTAP_OUTPUT, &obj),
 		       "'dnstap-output' must be set if 'dnstap' is set");
 
 		obj2 = cfg_tuple_get(obj, "mode");
@@ -3428,32 +3435,28 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 		}
 
 		fopt = fstrm_iothr_options_init();
-		/*
-		 * Both network threads and worker threads may log dnstap data.
-		 */
-		fstrm_iothr_options_set_num_input_queues(fopt,
-							 2 * named_g_cpus);
 		fstrm_iothr_options_set_queue_model(
 			fopt, FSTRM_IOTHR_QUEUE_MODEL_MPSC);
 
 		obj = NULL;
-		result = named_config_get(maps, "fstrm-set-buffer-hint", &obj);
+		result = named_config_get(
+			maps, CFG_CLAUSE_FSTRM_SET_BUFFER_HINT, &obj);
 		if (result == ISC_R_SUCCESS) {
 			i = cfg_obj_asuint32(obj);
 			fstrm_iothr_options_set_buffer_hint(fopt, i);
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "fstrm-set-flush-timeout",
-					  &obj);
+		result = named_config_get(
+			maps, CFG_CLAUSE_FSTRM_SET_FLUSH_TIMEOUT, &obj);
 		if (result == ISC_R_SUCCESS) {
 			i = cfg_obj_asuint32(obj);
 			fstrm_iothr_options_set_flush_timeout(fopt, i);
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "fstrm-set-input-queue-size",
-					  &obj);
+		result = named_config_get(
+			maps, CFG_CLAUSE_FSTRM_SET_INPUT_QUEUE_SIZE, &obj);
 		if (result == ISC_R_SUCCESS) {
 			i = cfg_obj_asuint32(obj);
 			fstrm_iothr_options_set_input_queue_size(fopt, i);
@@ -3461,15 +3464,16 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 
 		obj = NULL;
 		result = named_config_get(
-			maps, "fstrm-set-output-notify-threshold", &obj);
+			maps, CFG_CLAUSE_FSTRM_SET_OUTPUT_NOTIFY_THRESHOLD,
+			&obj);
 		if (result == ISC_R_SUCCESS) {
 			i = cfg_obj_asuint32(obj);
 			fstrm_iothr_options_set_queue_notify_threshold(fopt, i);
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "fstrm-set-output-queue-model",
-					  &obj);
+		result = named_config_get(
+			maps, CFG_CLAUSE_FSTRM_SET_OUTPUT_QUEUE_MODEL, &obj);
 		if (result == ISC_R_SUCCESS) {
 			if (strcasecmp(cfg_obj_asstring(obj), "spsc") == 0) {
 				i = FSTRM_IOTHR_QUEUE_MODEL_SPSC;
@@ -3480,16 +3484,16 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "fstrm-set-output-queue-size",
-					  &obj);
+		result = named_config_get(
+			maps, CFG_CLAUSE_FSTRM_SET_OUTPUT_QUEUE_SIZE, &obj);
 		if (result == ISC_R_SUCCESS) {
 			i = cfg_obj_asuint32(obj);
 			fstrm_iothr_options_set_output_queue_size(fopt, i);
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "fstrm-set-reopen-interval",
-					  &obj);
+		result = named_config_get(
+			maps, CFG_CLAUSE_FSTRM_SET_REOPEN_INTERVAL, &obj);
 		if (result == ISC_R_SUCCESS) {
 			i = cfg_obj_asduration(obj);
 			fstrm_iothr_options_set_reopen_interval(fopt, i);
@@ -3509,7 +3513,7 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "dnstap-version", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_DNSTAP_VERSION, &obj);
 	if (result != ISC_R_SUCCESS) {
 		/* not specified; use the product and version */
 		dns_dt_setversion(named_g_server->dtenv, PACKAGE_STRING);
@@ -3519,7 +3523,7 @@ configure_dnstap(const cfg_obj_t **maps, dns_view_t *view) {
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "dnstap-identity", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_DNSTAP_IDENTITY, &obj);
 	if (result == ISC_R_SUCCESS && cfg_obj_isboolean(obj)) {
 		/* "hostname" is interpreted as boolean true */
 		char buf[256];
@@ -3562,7 +3566,7 @@ create_mapped_acl(void) {
 isc_result_t
 named_register_one_plugin(const cfg_obj_t *config, const cfg_obj_t *obj,
 			  cfg_aclconfctx_t *aclctx, const char *plugin_path,
-			  const char *parameters, void *callback_data) {
+			  const cfg_token_t *parameters, void *callback_data) {
 	char full_path[PATH_MAX];
 	isc_result_t result;
 	ns_hook_data_t *hookdata = callback_data;
@@ -3666,7 +3670,7 @@ configure_max_cache_size(dns_view_t *view, const cfg_obj_t *maps[4]) {
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "max-cache-size", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_CACHE_SIZE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (cfg_obj_isstring(obj) &&
 	    strcasecmp(cfg_obj_asstring(obj), "default") == 0)
@@ -3717,12 +3721,12 @@ configure_view_delegdb(const cfg_obj_t **maps, dns_view_t *pview,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "min-delegation-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MIN_DELEGATION_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	minttl = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "max-delegation-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_DELEGATION_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	maxttl = cfg_obj_asduration(obj);
 
@@ -3833,7 +3837,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	REQUIRE(DNS_VIEW_VALID(view));
 
 	if (config != NULL) {
-		(void)cfg_map_get(config, "options", &options);
+		(void)cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 	}
 
 	/*
@@ -3857,7 +3861,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	/*
 	 * Set the view's port number for outgoing queries.
 	 */
-	CHECKM(named_config_getport(config, "port", &port), "port");
+	CHECKM(named_config_getport(config, CFG_CLAUSE_PORT, &port), "port");
 	dns_view_setdstport(view, port);
 
 	/*
@@ -3866,14 +3870,17 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 	obj = NULL;
 	if (view->rdclass == dns_rdataclass_in &&
-	    named_config_get(maps, "response-policy", &obj) == ISC_R_SUCCESS)
+	    named_config_get(maps, CFG_CLAUSE_RESPONSE_POLICY, &obj) ==
+		    ISC_R_SUCCESS)
 	{
 		CHECK(configure_rpz(view, NULL, obj, &old_rpz_ok, first_time));
 		rpz_configured = true;
 	}
 
 	obj = NULL;
-	if (named_config_get(maps, "catalog-zones", &obj) == ISC_R_SUCCESS) {
+	if (named_config_get(maps, CFG_CLAUSE_CATALOG_ZONES, &obj) ==
+	    ISC_R_SUCCESS)
+	{
 		CHECK(configure_catz(view, NULL, config, obj));
 		catz_configured = true;
 	}
@@ -3883,9 +3890,9 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 	zonelist = NULL;
 	if (voptions != NULL) {
-		(void)cfg_map_get(voptions, "zone", &zonelist);
+		(void)cfg_map_get(voptions, CFG_CLAUSE_ZONE, &zonelist);
 	} else {
-		(void)cfg_map_get(config, "zone", &zonelist);
+		(void)cfg_map_get(config, CFG_CLAUSE_ZONE, &zonelist);
 	}
 
 	/*
@@ -3936,16 +3943,16 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 	dlzlist = NULL;
 	if (voptions != NULL) {
-		(void)cfg_map_get(voptions, "dlz", &dlzlist);
+		(void)cfg_map_get(voptions, CFG_CLAUSE_DLZ, &dlzlist);
 	} else {
-		(void)cfg_map_get(config, "dlz", &dlzlist);
+		(void)cfg_map_get(config, CFG_CLAUSE_DLZ, &dlzlist);
 	}
 
 	CFG_LIST_FOREACH(dlzlist, element) {
 		dlz = cfg_listelt_value(element);
 
 		obj = NULL;
-		(void)cfg_map_get(dlz, "database", &obj);
+		(void)cfg_map_get(dlz, CFG_CLAUSE_DATABASE, &obj);
 		if (obj != NULL) {
 			dns_dlzdb_t *dlzdb = NULL;
 			const cfg_obj_t *name, *search = NULL;
@@ -3974,7 +3981,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 			 * method now.  If not searchable, we'll take
 			 * care of it when we process the zone statement.
 			 */
-			(void)cfg_map_get(dlz, "search", &search);
+			(void)cfg_map_get(dlz, CFG_CLAUSE_SEARCH, &search);
 			if (search == NULL || cfg_obj_asboolean(search)) {
 				dlzdb->search = true;
 				CHECK(dns_dlzconfigure(view, dlzdb,
@@ -3994,7 +4001,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * we can reuse/share an existing cache.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "recursion", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_RECURSION, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->recursion = (view->rdclass == dns_rdataclass_in &&
 			   cfg_obj_asboolean(obj));
@@ -4028,17 +4035,17 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "zero-no-soa-ttl-cache", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_ZERO_NO_SOA_TTL_CACHE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	zero_no_soattl = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "resolver-use-dns64", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_RESOLVER_USE_DNS64, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->usedns64 = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "dns64", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_DNS64, &obj);
 	if (result == ISC_R_SUCCESS && strcmp(view->name, "_bind") &&
 	    strcmp(view->name, "_meta"))
 	{
@@ -4048,7 +4055,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		const cfg_obj_t *myobj;
 
 		myobj = NULL;
-		result = named_config_get(maps, "dns64-server", &myobj);
+		result = named_config_get(maps, CFG_CLAUSE_DNS64_SERVER,
+					  &myobj);
 		if (result == ISC_R_SUCCESS) {
 			server = cfg_obj_asstring(myobj);
 		} else {
@@ -4056,7 +4064,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		}
 
 		myobj = NULL;
-		result = named_config_get(maps, "dns64-contact", &myobj);
+		result = named_config_get(maps, CFG_CLAUSE_DNS64_CONTACT,
+					  &myobj);
 		if (result == ISC_R_SUCCESS) {
 			contact = cfg_obj_asstring(myobj);
 		} else {
@@ -4072,7 +4081,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 					    &prefixlen);
 
 			obj = NULL;
-			(void)cfg_map_get(map, "suffix", &obj);
+			(void)cfg_map_get(map, CFG_CLAUSE_SUFFIX, &obj);
 			if (obj != NULL) {
 				sp = &suffix;
 				isc_netaddr_fromsockaddr(
@@ -4083,19 +4092,19 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 
 			clients = mapped = excluded = NULL;
 			obj = NULL;
-			(void)cfg_map_get(map, "clients", &obj);
+			(void)cfg_map_get(map, CFG_CLAUSE_CLIENTS, &obj);
 			if (obj != NULL) {
 				CHECK(cfg_acl_fromconfig(obj, config, aclctx,
 							 mctx, 0, &clients));
 			}
 			obj = NULL;
-			(void)cfg_map_get(map, "mapped", &obj);
+			(void)cfg_map_get(map, CFG_CLAUSE_MAPPED, &obj);
 			if (obj != NULL) {
 				CHECK(cfg_acl_fromconfig(obj, config, aclctx,
 							 mctx, 0, &mapped));
 			}
 			obj = NULL;
-			(void)cfg_map_get(map, "exclude", &obj);
+			(void)cfg_map_get(map, CFG_CLAUSE_EXCLUDE, &obj);
 			if (obj != NULL) {
 				CHECK(cfg_acl_fromconfig(obj, config, aclctx,
 							 mctx, 0, &excluded));
@@ -4107,13 +4116,13 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 			}
 
 			obj = NULL;
-			(void)cfg_map_get(map, "recursive-only", &obj);
+			(void)cfg_map_get(map, CFG_CLAUSE_RECURSIVE_ONLY, &obj);
 			if (obj != NULL && cfg_obj_asboolean(obj)) {
 				dns64options |= DNS_DNS64_RECURSIVE_ONLY;
 			}
 
 			obj = NULL;
-			(void)cfg_map_get(map, "break-dnssec", &obj);
+			(void)cfg_map_get(map, CFG_CLAUSE_BREAK_DNSSEC, &obj);
 			if (obj != NULL && cfg_obj_asboolean(obj)) {
 				dns64options |= DNS_DNS64_BREAK_DNSSEC;
 			}
@@ -4138,12 +4147,12 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "dnssec-accept-expired", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_DNSSEC_ACCEPT_EXPIRED, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->acceptexpired = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "dnssec-validation", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_DNSSEC_VALIDATION, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (cfg_obj_isboolean(obj)) {
 		view->enablevalidation = cfg_obj_asboolean(obj);
@@ -4157,36 +4166,36 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "max-cache-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_CACHE_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->maxcachettl = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "max-ncache-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_NCACHE_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->maxncachettl = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "min-cache-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MIN_CACHE_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->mincachettl = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "min-ncache-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MIN_NCACHE_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->minncachettl = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "synth-from-dnssec", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SYNTH_FROM_DNSSEC, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->synthfromdnssec = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "stale-cache-enable", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STALE_CACHE_ENABLE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (cfg_obj_asboolean(obj)) {
 		obj = NULL;
-		result = named_config_get(maps, "max-stale-ttl", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_MAX_STALE_TTL, &obj);
 		INSIST(result == ISC_R_SUCCESS);
 		max_stale_ttl = ISC_MAX(cfg_obj_asduration(obj), 1);
 	}
@@ -4196,7 +4205,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 
 	obj = NULL;
-	result = named_config_get(maps, "stale-answer-enable", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STALE_ANSWER_ENABLE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->staleanswersenable = cfg_obj_asboolean(obj);
 
@@ -4210,7 +4219,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "stale-answer-client-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STALE_ANSWER_CLIENT_TIMEOUT,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (cfg_obj_isstring(obj)) {
 		/*
@@ -4240,7 +4250,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "stale-refresh-time", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STALE_REFRESH_TIME, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	stale_refresh_time = cfg_obj_asduration(obj);
 
@@ -4274,7 +4284,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * ensure these configuration options don't invalidate reusing/sharing.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "attach-cache", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_ATTACH_CACHE, &obj);
 	if (result == ISC_R_SUCCESS) {
 		cachename = cfg_obj_asstring(obj);
 	} else {
@@ -4376,7 +4386,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	dns_cache_detach(&cache);
 
 	obj = NULL;
-	result = named_config_get(maps, "stale-answer-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STALE_ANSWER_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->staleanswerttl = ISC_MAX(cfg_obj_asduration(obj), 1);
 
@@ -4462,7 +4472,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		double low, high, discount;
 
 		obj = NULL;
-		result = named_config_get(maps, "fetches-per-server", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_FETCHES_PER_SERVER,
+					  &obj);
 		INSIST(result == ISC_R_SUCCESS);
 		obj2 = cfg_tuple_get(obj, "fetches");
 		fps = cfg_obj_asuint32(obj2);
@@ -4484,7 +4495,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "fetch-quota-params", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_FETCH_QUOTA_PARAMS,
+					  &obj);
 		INSIST(result == ISC_R_SUCCESS);
 
 		obj2 = cfg_tuple_get(obj, "frequency");
@@ -4510,7 +4522,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set resolver's lame-ttl.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "lame-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_LAME_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	lame_ttl = cfg_obj_asduration(obj);
 	if (lame_ttl > 0) {
@@ -4523,7 +4535,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set the resolver's query timeout.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "resolver-query-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_RESOLVER_QUERY_TIMEOUT,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	query_timeout = cfg_obj_asuint32(obj);
 	dns_resolver_settimeout(view->resolver, query_timeout);
@@ -4535,7 +4548,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set the resolver's EDNS UDP size.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "edns-udp-size", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_EDNS_UDP_SIZE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_view_setudpsize(view, (uint16_t)cfg_obj_asuint32(obj));
 
@@ -4543,7 +4556,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set the maximum UDP response size.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "max-udp-size", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_UDP_SIZE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->maxudp = cfg_obj_asuint32(obj);
 
@@ -4551,7 +4564,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set the maximum UDP when a COOKIE is not provided.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "nocookie-udp-size", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_NOCOOKIE_UDP_SIZE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->nocookieudp = cfg_obj_asuint32(obj);
 	if (view->nocookieudp > view->maxudp) {
@@ -4562,7 +4575,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set supported DNSSEC algorithms.
 	 */
 	disabled = NULL;
-	(void)named_config_get(maps, "disable-algorithms", &disabled);
+	(void)named_config_get(maps, CFG_CLAUSE_DISABLE_ALGORITHMS, &disabled);
 	if (disabled != NULL) {
 		CFG_LIST_FOREACH(disabled, element) {
 			CHECK(disable_algorithms(cfg_listelt_value(element),
@@ -4574,7 +4587,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set supported DS digest types.
 	 */
 	disabled = NULL;
-	(void)named_config_get(maps, "disable-ds-digests", &disabled);
+	(void)named_config_get(maps, CFG_CLAUSE_DISABLE_DS_DIGESTS, &disabled);
 	if (disabled != NULL) {
 		CFG_LIST_FOREACH(disabled, element) {
 			CHECK(disable_ds_digests(cfg_listelt_value(element),
@@ -4588,8 +4601,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 	forwardtype = NULL;
 	forwarders = NULL;
-	(void)named_config_get(maps, "forward", &forwardtype);
-	(void)named_config_get(maps, "forwarders", &forwarders);
+	(void)named_config_get(maps, CFG_CLAUSE_FORWARD, &forwardtype);
+	(void)named_config_get(maps, CFG_CLAUSE_FORWARDERS, &forwarders);
 	if (forwarders != NULL) {
 		CHECK(configure_forward(config, view, dns_rootname, forwarders,
 					forwardtype));
@@ -4599,7 +4612,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Dual Stack Servers.
 	 */
 	alternates = NULL;
-	(void)named_config_get(maps, "dual-stack-servers", &alternates);
+	(void)named_config_get(maps, CFG_CLAUSE_DUAL_STACK_SERVERS,
+			       &alternates);
 	if (alternates != NULL) {
 		CHECK(configure_alternates(config, view, alternates));
 	}
@@ -4616,12 +4630,13 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Configure SIG(0) check limits when matching a DNS message to a view.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "sig0key-checks-limit", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SIG0KEY_CHECKS_LIMIT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->sig0key_checks_limit = cfg_obj_asuint32(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "sig0message-checks-limit", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SIG0MESSAGE_CHECKS_LIMIT,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->sig0message_checks_limit = cfg_obj_asuint32(obj);
 
@@ -4671,7 +4686,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		const cfg_obj_t *peers = NULL;
 		dns_peerlist_t *newpeers = NULL;
 
-		(void)named_config_get(cfgmaps, "server", &peers);
+		(void)named_config_get(cfgmaps, CFG_CLAUSE_SERVER, &peers);
 		dns_peerlist_new(mctx, &newpeers);
 		CFG_LIST_FOREACH(peers, element) {
 			const cfg_obj_t *cpeer = cfg_listelt_value(element);
@@ -4698,7 +4713,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 
 		const cfg_obj_t *rrsetorder = NULL;
 		if (ISC_R_SUCCESS ==
-		    named_config_get(maps, "rrset-order", &rrsetorder))
+		    named_config_get(maps, CFG_CLAUSE_RRSET_ORDER, &rrsetorder))
 		{
 			dns_order_create(mctx, &order);
 			CFG_LIST_FOREACH(rrsetorder, element) {
@@ -4723,16 +4738,18 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * must be passed so that named ACLs defined at the global level
 	 * can be retrieved.)
 	 */
-	CHECK(configure_view_acl(vconfig, config, "match-clients", NULL, aclctx,
-				 isc_g_mctx, &view->matchclients));
-	CHECK(configure_view_acl(vconfig, config, "match-destinations", NULL,
-				 aclctx, isc_g_mctx, &view->matchdestinations));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_MATCH_CLIENTS,
+				 NULL, aclctx, isc_g_mctx,
+				 &view->matchclients));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_MATCH_DESTINATIONS,
+				 NULL, aclctx, isc_g_mctx,
+				 &view->matchdestinations));
 
 	/*
 	 * Configure the "match-recursive-only" option.
 	 */
 	obj = NULL;
-	(void)named_config_get(maps, "match-recursive-only", &obj);
+	(void)named_config_get(maps, CFG_CLAUSE_MATCH_RECURSIVE_ONLY, &obj);
 	if (obj != NULL && cfg_obj_asboolean(obj)) {
 		view->matchrecursiveonly = true;
 	} else {
@@ -4743,7 +4760,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Configure other configurable data.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "qname-minimization", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_QNAME_MINIMIZATION, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	qminmode = cfg_obj_asstring(obj);
 	INSIST(qminmode != NULL);
@@ -4759,17 +4776,17 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "auth-nxdomain", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_AUTH_NXDOMAIN, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->auth_nxdomain = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "minimal-any", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MINIMAL_ANY, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->minimal_any = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "minimal-responses", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MINIMAL_RESPONSES, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (cfg_obj_isboolean(obj)) {
 		if (cfg_obj_asboolean(obj)) {
@@ -4789,7 +4806,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "transfer-format", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TRANSFER_FORMAT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	str = cfg_obj_asstring(obj);
 	if (strcasecmp(str, "many-answers") == 0) {
@@ -4801,41 +4818,43 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "trust-anchor-telemetry", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TRUST_ANCHOR_TELEMETRY,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->trust_anchor_telemetry = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "root-key-sentinel", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_ROOT_KEY_SENTINEL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->root_key_sentinel = cfg_obj_asboolean(obj);
 
-	CHECK(configure_view_acl(vconfig, config, "allow-query", NULL, aclctx,
-				 isc_g_mctx, &view->queryacl));
-	CHECK(configure_view_acl(vconfig, config, "allow-query-on", NULL,
-				 aclctx, isc_g_mctx, &view->queryonacl));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_ALLOW_QUERY, NULL,
+				 aclctx, isc_g_mctx, &view->queryacl));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_ALLOW_QUERY_ON,
+				 NULL, aclctx, isc_g_mctx, &view->queryonacl));
 
-	CHECK(configure_view_acl(vconfig, config, "allow-query-cache", NULL,
-				 aclctx, isc_g_mctx, &view->cacheacl));
-	CHECK(configure_view_acl(vconfig, config, "allow-query-cache-on", NULL,
-				 aclctx, isc_g_mctx, &view->cacheonacl));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_ALLOW_QUERY_CACHE,
+				 NULL, aclctx, isc_g_mctx, &view->cacheacl));
+	CHECK(configure_view_acl(vconfig, config,
+				 CFG_CLAUSE_ALLOW_QUERY_CACHE_ON, NULL, aclctx,
+				 isc_g_mctx, &view->cacheonacl));
 
-	CHECK(configure_view_acl(vconfig, config, "allow-proxy", NULL, aclctx,
-				 isc_g_mctx, &view->proxyacl));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_ALLOW_PROXY, NULL,
+				 aclctx, isc_g_mctx, &view->proxyacl));
 
-	CHECK(configure_view_acl(vconfig, config, "allow-proxy-on", NULL,
-				 aclctx, isc_g_mctx, &view->proxyonacl));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_ALLOW_PROXY_ON,
+				 NULL, aclctx, isc_g_mctx, &view->proxyonacl));
 
 	if (view->rdclass != dns_rdataclass_in) {
 		dns_acl_none(isc_g_mctx, &view->recursionacl);
 		dns_acl_none(isc_g_mctx, &view->recursiononacl);
 	} else {
-		CHECK(configure_view_acl(vconfig, config, "allow-recursion",
-					 NULL, aclctx, isc_g_mctx,
-					 &view->recursionacl));
-		CHECK(configure_view_acl(vconfig, config, "allow-recursion-on",
-					 NULL, aclctx, isc_g_mctx,
-					 &view->recursiononacl));
+		CHECK(configure_view_acl(
+			vconfig, config, CFG_CLAUSE_ALLOW_RECURSION, NULL,
+			aclctx, isc_g_mctx, &view->recursionacl));
+		CHECK(configure_view_acl(
+			vconfig, config, CFG_CLAUSE_ALLOW_RECURSION_ON, NULL,
+			aclctx, isc_g_mctx, &view->recursiononacl));
 	}
 
 	/*
@@ -4843,69 +4862,71 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * clients. This causes case not always to be preserved,
 	 * and is needed by some broken clients.
 	 */
-	CHECK(configure_view_acl(vconfig, config, "no-case-compress", NULL,
-				 aclctx, isc_g_mctx, &view->nocasecompress));
+	CHECK(configure_view_acl(vconfig, config, CFG_CLAUSE_NO_CASE_COMPRESS,
+				 NULL, aclctx, isc_g_mctx,
+				 &view->nocasecompress));
 
 	/*
 	 * Disable name compression completely, this is a tradeoff
 	 * between CPU and network usage.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "message-compression", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MESSAGE_COMPRESSION, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->msgcompression = cfg_obj_asboolean(obj);
 
 	/*
 	 * Filter setting on addresses in the answer section.
 	 */
-	CHECK(configure_view_acl(vconfig, config, "deny-answer-addresses",
-				 "acl", aclctx, isc_g_mctx,
-				 &view->denyansweracl));
-	CHECK(configure_view_nametable(vconfig, config, "deny-answer-addresses",
-				       "except-from", isc_g_mctx,
-				       &view->answeracl_exclude));
+	CHECK(configure_view_acl(vconfig, config,
+				 CFG_CLAUSE_DENY_ANSWER_ADDRESSES, "acl",
+				 aclctx, isc_g_mctx, &view->denyansweracl));
+	CHECK(configure_view_nametable(
+		vconfig, config, CFG_CLAUSE_DENY_ANSWER_ADDRESSES,
+		"except-from", isc_g_mctx, &view->answeracl_exclude));
 
 	/*
 	 * Filter setting on names (CNAME/DNAME targets) in the answer section.
 	 */
-	CHECK(configure_view_nametable(vconfig, config, "deny-answer-aliases",
-				       "name", isc_g_mctx,
-				       &view->denyanswernames));
-	CHECK(configure_view_nametable(vconfig, config, "deny-answer-aliases",
-				       "except-from", isc_g_mctx,
-				       &view->answernames_exclude));
+	CHECK(configure_view_nametable(vconfig, config,
+				       CFG_CLAUSE_DENY_ANSWER_ALIASES, "name",
+				       isc_g_mctx, &view->denyanswernames));
+	CHECK(configure_view_nametable(
+		vconfig, config, CFG_CLAUSE_DENY_ANSWER_ALIASES, "except-from",
+		isc_g_mctx, &view->answernames_exclude));
 
 	/*
 	 * Configure default allow-transfer and allow-notify ACLs so they
 	 * can be inherited by zones.
 	 */
 	if (view->transferacl == NULL) {
-		CHECK(configure_view_acl(vconfig, config, "allow-transfer",
-					 NULL, aclctx, isc_g_mctx,
-					 &view->transferacl));
+		CHECK(configure_view_acl(
+			vconfig, config, CFG_CLAUSE_ALLOW_TRANSFER, NULL,
+			aclctx, isc_g_mctx, &view->transferacl));
 	}
 	if (view->notifyacl == NULL) {
-		CHECK(configure_view_acl(vconfig, config, "allow-notify", NULL,
-					 aclctx, isc_g_mctx, &view->notifyacl));
+		CHECK(configure_view_acl(vconfig, config,
+					 CFG_CLAUSE_ALLOW_NOTIFY, NULL, aclctx,
+					 isc_g_mctx, &view->notifyacl));
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "provide-ixfr", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_PROVIDE_IXFR, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->provideixfr = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "request-nsid", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_REQUEST_NSID, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->requestnsid = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "request-zoneversion", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_REQUEST_ZONEVERSION, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->requestzoneversion = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "send-cookie", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SEND_COOKIE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->sendcookie = cfg_obj_asboolean(obj);
 
@@ -4913,7 +4934,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	if (view->pad_acl != NULL) {
 		dns_acl_detach(&view->pad_acl);
 	}
-	result = named_config_get(maps, "response-padding", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_RESPONSE_PADDING, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	padding = cfg_obj_asuint32(cfg_tuple_get(obj, "block-size"));
 
@@ -4928,22 +4949,22 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 				 isc_g_mctx, 0, &view->pad_acl));
 
 	obj = NULL;
-	result = named_config_get(maps, "require-server-cookie", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_REQUIRE_SERVER_COOKIE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->requireservercookie = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "v6-bias", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_V6_BIAS, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->v6bias = cfg_obj_asuint32(obj) * 1000;
 
 	obj = NULL;
-	result = named_config_get(maps, "clients-per-query", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_CLIENTS_PER_QUERY, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	clients_per_query = cfg_obj_asuint32(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "max-clients-per-query", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_CLIENTS_PER_QUERY, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	max_clients_per_query = cfg_obj_asuint32(obj);
 
@@ -4964,7 +4985,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * for zone databases.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "max-records-per-type", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_RECORDS_PER_TYPE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_view_setmaxrrperset(view, cfg_obj_asuint32(obj));
 
@@ -4973,52 +4994,54 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * for zone databases.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "max-types-per-name", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_TYPES_PER_NAME, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_view_setmaxtypepername(view, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "max-recursion-depth", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_RECURSION_DEPTH, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_resolver_setmaxdepth(view->resolver, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "max-recursion-queries", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_RECURSION_QUERIES, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_resolver_setmaxqueries(view->resolver, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "max-query-restarts", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_QUERY_RESTARTS, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_view_setmaxrestarts(view, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "max-query-count", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_QUERY_COUNT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_view_setmaxqueries(view, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "max-delegation-servers", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_DELEGATION_SERVERS,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	CHECK(dns_view_setmaxdelegationservers(view, cfg_obj_asuint32(obj)));
 
 	obj = NULL;
-	result = named_config_get(maps, "max-validations-per-fetch", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MAX_VALIDATIONS_PER_FETCH,
+				  &obj);
 	if (result == ISC_R_SUCCESS) {
 		dns_resolver_setmaxvalidations(view->resolver,
 					       cfg_obj_asuint32(obj));
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "max-validation-failures-per-fetch",
-				  &obj);
+	result = named_config_get(
+		maps, CFG_CLAUSE_MAX_VALIDATION_FAILURES_PER_FETCH, &obj);
 	if (result == ISC_R_SUCCESS) {
 		dns_resolver_setmaxvalidationfails(view->resolver,
 						   cfg_obj_asuint32(obj));
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "fetches-per-zone", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_FETCHES_PER_ZONE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	obj2 = cfg_tuple_get(obj, "fetches");
 	dns_resolver_setfetchesperzone(view->resolver, cfg_obj_asuint32(obj2));
@@ -5040,7 +5063,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "prefetch", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_PREFETCH, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	prefetch_trigger = cfg_tuple_get(obj, "trigger");
 	view->prefetch_trigger = cfg_obj_asuint32(prefetch_trigger);
@@ -5055,17 +5078,17 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 					auto_root));
 
 	obj = NULL;
-	result = named_config_get(maps, "nta-recheck", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_NTA_RECHECK, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->nta_recheck = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "nta-lifetime", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_NTA_LIFETIME, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	view->nta_lifetime = cfg_obj_asduration(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "preferred-glue", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_PREFERRED_GLUE, &obj);
 	if (result == ISC_R_SUCCESS) {
 		str = cfg_obj_asstring(obj);
 		if (strcasecmp(str, "a") == 0) {
@@ -5084,9 +5107,9 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 	dyndb_list = NULL;
 	if (voptions != NULL) {
-		(void)cfg_map_get(voptions, "dyndb", &dyndb_list);
+		(void)cfg_map_get(voptions, CFG_CLAUSE_DYNDB, &dyndb_list);
 	} else {
-		(void)cfg_map_get(config, "dyndb", &dyndb_list);
+		(void)cfg_map_get(config, CFG_CLAUSE_DYNDB, &dyndb_list);
 	}
 
 	CFG_LIST_FOREACH(dyndb_list, element) {
@@ -5106,9 +5129,9 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 */
 	plugin_list = NULL;
 	if (voptions != NULL) {
-		(void)cfg_map_get(voptions, "plugin", &plugin_list);
+		(void)cfg_map_get(voptions, CFG_CLAUSE_PLUGIN, &plugin_list);
 	} else {
-		(void)cfg_map_get(config, "plugin", &plugin_list);
+		(void)cfg_map_get(config, CFG_CLAUSE_PLUGIN, &plugin_list);
 	}
 
 	if (plugin_list != NULL) {
@@ -5135,8 +5158,9 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * they are disabled by default.
 	 */
 	obj = NULL;
-	(void)named_config_get(maps, "empty-zones-enable", &obj);
-	(void)named_config_get(maps, "disable-empty-zone", &disablelist);
+	(void)named_config_get(maps, CFG_CLAUSE_EMPTY_ZONES_ENABLE, &obj);
+	(void)named_config_get(maps, CFG_CLAUSE_DISABLE_EMPTY_ZONE,
+			       &disablelist);
 	if (obj == NULL && disablelist == NULL &&
 	    view->rdclass == dns_rdataclass_in)
 	{
@@ -5167,7 +5191,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		name = dns_fixedname_initname(&fixed);
 
 		obj = NULL;
-		result = named_config_get(maps, "empty-server", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_EMPTY_SERVER, &obj);
 		if (result == ISC_R_SUCCESS) {
 			CHECK(dns_name_fromstring(name, cfg_obj_asstring(obj),
 						  dns_rootname, 0, NULL));
@@ -5180,7 +5204,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "empty-contact", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_EMPTY_CONTACT, &obj);
 		if (result == ISC_R_SUCCESS) {
 			CHECK(dns_name_fromstring(name, cfg_obj_asstring(obj),
 						  dns_rootname, 0, NULL));
@@ -5193,7 +5217,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "zone-statistics", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_ZONE_STATISTICS,
+					  &obj);
 		INSIST(result == ISC_R_SUCCESS);
 		if (cfg_obj_isboolean(obj)) {
 			if (cfg_obj_asboolean(obj)) {
@@ -5285,7 +5310,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 
 	obj = NULL;
 	if (view->rdclass == dns_rdataclass_in) {
-		(void)named_config_get(maps, "ipv4only-enable", &obj);
+		(void)named_config_get(maps, CFG_CLAUSE_IPV4ONLY_ENABLE, &obj);
 	}
 	if (view->rdclass == dns_rdataclass_in && (obj != NULL)
 		    ? cfg_obj_asboolean(obj)
@@ -5305,7 +5330,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		size_t ipv4only_zone;
 
 		obj = NULL;
-		result = named_config_get(maps, "ipv4only-server", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_IPV4ONLY_SERVER,
+					  &obj);
 		if (result == ISC_R_SUCCESS) {
 			server = cfg_obj_asstring(obj);
 		} else {
@@ -5313,7 +5339,8 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 		}
 
 		obj = NULL;
-		result = named_config_get(maps, "ipv4only-contact", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_IPV4ONLY_CONTACT,
+					  &obj);
 		if (result == ISC_R_SUCCESS) {
 			contact = cfg_obj_asstring(obj);
 		} else {
@@ -5372,7 +5399,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 
 			CHECK(create_ipv4only_zone(zone, view, name,
 						   zones[ipv4only_zone].type,
-						   mctx, server, contact));
+						   server, contact));
 			if (zone != NULL) {
 				dns_zone_detach(&zone);
 			}
@@ -5380,7 +5407,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "rate-limit", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_RATE_LIMIT, &obj);
 	if (result == ISC_R_SUCCESS) {
 		CHECK(configure_rrl(view, config, obj, aclctx));
 	}
@@ -5389,7 +5416,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Set the servfail-ttl.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "servfail-ttl", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SERVFAIL_TTL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	fail_ttl = cfg_obj_asduration(obj);
 	if (fail_ttl > 30) {
@@ -5401,9 +5428,9 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Name space to look up redirect information in.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "nxdomain-redirect", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_NXDOMAIN_REDIRECT, &obj);
 	if (result == ISC_R_SUCCESS) {
-		dns_name_t *name = dns_fixedname_name(&view->redirectfixed);
+		dns_name_t *name = dns_name(&view->redirectfixed);
 		CHECK(dns_name_fromstring(name, cfg_obj_asstring(obj),
 					  dns_rootname, 0, NULL));
 		view->redirectzone = name;
@@ -5415,7 +5442,7 @@ configure_view(dns_view_t *view, dns_viewlist_t *viewlist, cfg_obj_t *config,
 	 * Exceptions to DNSSEC validation.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "validate-except", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_VALIDATE_EXCEPT, &obj);
 	if (result == ISC_R_SUCCESS) {
 		result = dns_view_getntatable(view, &ntatable);
 	}
@@ -5459,8 +5486,8 @@ cleanup:
 			obj = NULL;
 			if (rpz_configured &&
 			    pview->rdclass == dns_rdataclass_in &&
-			    named_config_get(maps, "response-policy", &obj) ==
-				    ISC_R_SUCCESS)
+			    named_config_get(maps, CFG_CLAUSE_RESPONSE_POLICY,
+					     &obj) == ISC_R_SUCCESS)
 			{
 				/*
 				 * We are swapping the places of the `view` and
@@ -5485,8 +5512,8 @@ cleanup:
 			obj = NULL;
 			if (catz_configured &&
 			    pview->rdclass == dns_rdataclass_in &&
-			    named_config_get(maps, "catalog-zones", &obj) ==
-				    ISC_R_SUCCESS)
+			    named_config_get(maps, CFG_CLAUSE_CATALOG_ZONES,
+					     &obj) == ISC_R_SUCCESS)
 			{
 				/*
 				 * We are swapping the places of the `view` and
@@ -5591,7 +5618,7 @@ configure_alternates(const cfg_obj_t *config, dns_view_t *view,
 	/*
 	 * Determine which port to send requests to.
 	 */
-	CHECKM(named_config_getport(config, "port", &port), "port");
+	CHECKM(named_config_getport(config, CFG_CLAUSE_PORT, &port), "port");
 
 	if (alternates != NULL) {
 		portobj = cfg_tuple_get(alternates, "port");
@@ -5671,7 +5698,8 @@ validate_tls(const cfg_obj_t *config, dns_view_t *view, const cfg_obj_t *obj,
 	}
 
 	if (strcasecmp(str, "ephemeral") != 0) {
-		const cfg_obj_t *tlsmap = find_maplist(config, "tls", str);
+		const cfg_obj_t *tlsmap = find_maplist(config, CFG_CLAUSE_TLS,
+						       str);
 
 		if (tlsmap == NULL) {
 			cfg_obj_log(obj, ISC_LOG_ERROR,
@@ -5708,8 +5736,9 @@ configure_forward(const cfg_obj_t *config, dns_view_t *view,
 	/*
 	 * Determine which port to send forwarded requests to.
 	 */
-	CHECKM(named_config_getport(config, "port", &port), "port");
-	CHECKM(named_config_getport(config, "tls-port", &tls_port), "tls-port");
+	CHECKM(named_config_getport(config, CFG_CLAUSE_PORT, &port), "port");
+	CHECKM(named_config_getport(config, CFG_CLAUSE_TLS_PORT, &tls_port),
+	       "tls-port");
 
 	if (forwarders != NULL) {
 		portobj = cfg_tuple_get(forwarders, "port");
@@ -5931,6 +5960,34 @@ create_view(const cfg_obj_t *vconfig, dns_viewlist_t *viewlist,
 	return ISC_R_SUCCESS;
 }
 
+static void
+configure_zone_nscheck(const cfg_obj_t *options, const cfg_obj_t *vconfig,
+		       dns_zone_t *zone) {
+	const cfg_obj_t *modeobj = NULL;
+	const cfg_obj_t *voptions = NULL;
+	const char *mode;
+
+	if (vconfig) {
+		voptions = cfg_tuple_get(vconfig, "options");
+	}
+	(void)named_config_findopt(voptions, options, CFG_CLAUSE_CHECK_NS,
+				   &modeobj);
+	mode = cfg_obj_asstring(modeobj);
+
+	if (strcmp(mode, "fail") == 0) {
+		dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, true);
+		dns_zone_setoption(zone, DNS_ZONEOPT_FATALNS, true);
+	} else if (strcmp(mode, "warn") == 0) {
+		dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, true);
+		dns_zone_setoption(zone, DNS_ZONEOPT_FATALNS, false);
+	} else if (strcmp(mode, "ignore") == 0) {
+		dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, false);
+		dns_zone_setoption(zone, DNS_ZONEOPT_FATALNS, false);
+	} else {
+		UNREACHABLE();
+	}
+}
+
 /*
  * Configure or reconfigure a zone.
  */
@@ -5967,7 +6024,7 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 	bool fullsign = false;
 
 	options = NULL;
-	(void)cfg_map_get(config, "options", &options);
+	(void)cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 
 	zoptions = cfg_tuple_get(zconfig, "options");
 	toptions = named_zone_templateopts(config, zoptions);
@@ -5979,9 +6036,9 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 	isc_buffer_constinit(&buffer, zname, strlen(zname));
 	isc_buffer_add(&buffer, strlen(zname));
 	dns_fixedname_init(&fixorigin);
-	CHECK(dns_name_fromtext(dns_fixedname_name(&fixorigin), &buffer,
-				dns_rootname, 0));
-	origin = dns_fixedname_name(&fixorigin);
+	CHECK(dns_name_fromtext(dns_name(&fixorigin), &buffer, dns_rootname,
+				0));
+	origin = dns_name(&fixorigin);
 
 	CHECK(named_config_getclass(cfg_tuple_get(zconfig, "class"),
 				    view->rdclass, &zclass));
@@ -6001,7 +6058,7 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 		CLEANUP(ISC_R_FAILURE);
 	}
 
-	(void)cfg_map_get(zoptions, "in-view", &viewobj);
+	(void)cfg_map_get(zoptions, CFG_CLAUSE_IN_VIEW, &viewobj);
 	if (viewobj != NULL) {
 		const char *inview = cfg_obj_asstring(viewobj);
 		dns_view_t *otherview = NULL;
@@ -6040,10 +6097,12 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 		 * other view.
 		 */
 		forwarders = NULL;
-		result = cfg_map_get(zoptions, "forwarders", &forwarders);
+		result = cfg_map_get(zoptions, CFG_CLAUSE_FORWARDERS,
+				     &forwarders);
 		if (result == ISC_R_SUCCESS) {
 			forwardtype = NULL;
-			(void)cfg_map_get(zoptions, "forward", &forwardtype);
+			(void)cfg_map_get(zoptions, CFG_CLAUSE_FORWARD,
+					  &forwardtype);
 			CHECK(configure_forward(config, view, origin,
 						forwarders, forwardtype));
 		}
@@ -6051,7 +6110,8 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 		goto cleanup;
 	}
 
-	(void)named_config_findopt(zoptions, toptions, "type", &typeobj);
+	(void)named_config_findopt(zoptions, toptions, CFG_CLAUSE_TYPE,
+				   &typeobj);
 	if (typeobj == NULL) {
 		cfg_obj_log(zconfig, ISC_LOG_ERROR,
 			    "zone '%s' 'type' not specified", zname);
@@ -6065,7 +6125,7 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 	 */
 	if (strcasecmp(ztypestr, "hint") == 0) {
 		const cfg_obj_t *fileobj = NULL;
-		(void)named_config_findopt(zoptions, toptions, "file",
+		(void)named_config_findopt(zoptions, toptions, CFG_CLAUSE_FILE,
 					   &fileobj);
 		if (fileobj == NULL) {
 			isc_log_write(NAMED_LOGCATEGORY_GENERAL,
@@ -6094,10 +6154,10 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 		forwardtype = NULL;
 		forwarders = NULL;
 
-		(void)named_config_findopt(zoptions, toptions, "forward",
-					   &forwardtype);
-		(void)named_config_findopt(zoptions, toptions, "forwarders",
-					   &forwarders);
+		(void)named_config_findopt(zoptions, toptions,
+					   CFG_CLAUSE_FORWARD, &forwardtype);
+		(void)named_config_findopt(zoptions, toptions,
+					   CFG_CLAUSE_FORWARDERS, &forwarders);
 		CHECK(configure_forward(config, view, origin, forwarders,
 					forwardtype));
 		goto cleanup;
@@ -6125,8 +6185,6 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 						     &zone));
 			dns_zone_setorigin(zone, origin);
 			dns_zone_setview(zone, view);
-			CHECK(dns_zonemgr_managezone(named_g_server->zonemgr,
-						     zone));
 			dns_zone_setstats(zone, named_g_server->zonestats);
 		}
 		CHECK(named_zone_configure(config, vconfig, zconfig, aclctx,
@@ -6227,9 +6285,9 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 		CHECK(dns_zonemgr_createzone(named_g_server->zonemgr, &zone));
 		dns_zone_setorigin(zone, origin);
 		dns_zone_setview(zone, view);
-		CHECK(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
 		dns_zone_setstats(zone, named_g_server->zonestats);
 	}
+
 	if (rpz_num != DNS_RPZ_INVALID_NUM) {
 		result = dns_zone_rpz_enable(zone, view->rpzs, rpz_num);
 		if (result != ISC_R_SUCCESS) {
@@ -6243,6 +6301,8 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 		}
 	}
 
+	configure_zone_nscheck(options, vconfig, zone);
+
 	if (zone_is_catz) {
 		dns_zone_catz_enable(zone, view->catzs);
 	} else if (dns_zone_catz_is_enabled(zone)) {
@@ -6254,10 +6314,11 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 	 * selective forwarding.
 	 */
 	forwarders = NULL;
-	named_config_findopt(zoptions, toptions, "forwarders", &forwarders);
+	named_config_findopt(zoptions, toptions, CFG_CLAUSE_FORWARDERS,
+			     &forwarders);
 	if (forwarders != NULL) {
 		forwardtype = NULL;
-		named_config_findopt(zoptions, toptions, "forward",
+		named_config_findopt(zoptions, toptions, CFG_CLAUSE_FORWARD,
 				     &forwardtype);
 		CHECK(configure_forward(config, view, origin, forwarders,
 					forwardtype));
@@ -6290,10 +6351,13 @@ configure_zone(const cfg_obj_t *config, const cfg_obj_t *zconfig,
 			dns_zone_setorigin(raw, origin);
 			dns_zone_setview(raw, view);
 			dns_zone_setstats(raw, named_g_server->zonestats);
+			dns_zone_setoption(raw, DNS_ZONEOPT_CHECKNS, true);
+			dns_zone_setoption(zone, DNS_ZONEOPT_FATALNS, true);
 			CHECK(dns_zone_link(zone, raw));
 		}
 		named_config_findopt(zoptions, toptions,
-				     "ixfr-from-differences", &ixfrfromdiffs);
+				     CFG_CLAUSE_IXFR_FROM_DIFFERENCES,
+				     &ixfrfromdiffs);
 		if (ixfrfromdiffs != NULL) {
 			isc_log_write(NAMED_LOGCATEGORY_GENERAL,
 				      NAMED_LOGMODULE_SERVER, ISC_LOG_INFO,
@@ -6404,8 +6468,6 @@ add_keydata_zone(dns_view_t *view, const char *directory, isc_mem_t *mctx) {
 	dns_zone_settype(zone, dns_zone_key);
 	dns_zone_setclass(zone, view->rdclass);
 
-	CHECK(dns_zonemgr_managezone(named_g_server->zonemgr, zone));
-
 	dns_acl_none(mctx, &none);
 	dns_zone_setqueryacl(zone, none);
 	dns_zone_setqueryonacl(zone, none);
@@ -6414,7 +6476,7 @@ add_keydata_zone(dns_view_t *view, const char *directory, isc_mem_t *mctx) {
 	dns_zone_setcheckdstype(zone, dns_checkdstype_no);
 	dns_zone_setnotifytype(zone, dns_rdatatype_soa, dns_notifytype_no);
 	dns_zone_setnotifytype(zone, dns_rdatatype_cds, dns_notifytype_no);
-	dns_zone_setoption(zone, DNS_ZONEOPT_NOCHECKNS, true);
+	dns_zone_setoption(zone, DNS_ZONEOPT_CHECKNS, false);
 	dns_zone_setjournalsize(zone, 0);
 
 	dns_zone_setstats(zone, named_g_server->zonestats);
@@ -6445,7 +6507,7 @@ cleanup:
  * Configure a single server quota.
  */
 static void
-configure_server_quota(const cfg_obj_t **maps, const char *name,
+configure_server_quota(const cfg_obj_t **maps, enum cfg_clause name,
 		       isc_quota_t *quota) {
 	const cfg_obj_t *obj = NULL;
 	isc_result_t result;
@@ -6453,18 +6515,6 @@ configure_server_quota(const cfg_obj_t **maps, const char *name,
 	result = named_config_get(maps, name, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	isc_quota_max(quota, cfg_obj_asuint32(obj));
-}
-
-/*
- * This event callback is invoked to do periodic network interface
- * scanning.
- */
-
-static void
-interface_timer_tick(void *arg) {
-	named_server_t *server = (named_server_t *)arg;
-
-	(void)ns_interfacemgr_scan(server->interfacemgr, false, false);
 }
 
 typedef struct {
@@ -6604,8 +6654,8 @@ tat_send(void *arg) {
 	dns_name_t *keyname = NULL;
 	dns_name_t *tatname = NULL;
 
-	keyname = dns_fixedname_name(&tat->keyname);
-	tatname = dns_fixedname_name(&tat->tatname);
+	keyname = dns_name(&tat->keyname);
+	tatname = dns_name(&tat->tatname);
 
 	dns_name_format(tatname, namebuf, sizeof(namebuf));
 	isc_log_write(NAMED_LOGCATEGORY_GENERAL, NAMED_LOGMODULE_SERVER,
@@ -6978,7 +7028,7 @@ configure_session_key(const cfg_obj_t **maps, named_server_t *server,
 	isc_result_t result;
 
 	obj = NULL;
-	result = named_config_get(maps, "session-keyfile", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SESSION_KEYFILE, &obj);
 	if (result == ISC_R_SUCCESS) {
 		if (cfg_obj_isvoid(obj)) {
 			keyfile = NULL; /* disable it */
@@ -6990,7 +7040,7 @@ configure_session_key(const cfg_obj_t **maps, named_server_t *server,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "session-keyname", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SESSION_KEYNAME, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	keynamestr = cfg_obj_asstring(obj);
 	isc_buffer_constinit(&buffer, keynamestr, strlen(keynamestr));
@@ -6999,7 +7049,7 @@ configure_session_key(const cfg_obj_t **maps, named_server_t *server,
 	RETERR(dns_name_fromtext(keyname, &buffer, dns_rootname, 0));
 
 	obj = NULL;
-	result = named_config_get(maps, "session-keyalg", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SESSION_KEYALG, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	algstr = cfg_obj_asstring(obj);
 	result = named_config_getkeyalgorithm(algstr, &algtype, &bits);
@@ -7146,13 +7196,13 @@ setup_newzones(dns_view_t *view, cfg_obj_t *config, cfg_obj_t *vconfig) {
 	if (voptions != NULL) {
 		maps[i++] = voptions;
 	}
-	result = cfg_map_get(config, "options", &options);
+	result = cfg_map_get(config, CFG_CLAUSE_OPTIONS, &options);
 	if (result == ISC_R_SUCCESS) {
 		maps[i++] = options;
 	}
 	maps[i] = NULL;
 
-	result = named_config_get(maps, "allow-new-zones", &nz);
+	result = named_config_get(maps, CFG_CLAUSE_ALLOW_NEW_ZONES, &nz);
 	if (result == ISC_R_SUCCESS) {
 		view->newzone.allowed = cfg_obj_asboolean(nz);
 	}
@@ -7161,7 +7211,7 @@ setup_newzones(dns_view_t *view, cfg_obj_t *config, cfg_obj_t *vconfig) {
 		 * A non-empty catalog-zones statement implies allow-new-zones
 		 */
 		const cfg_obj_t *cz = NULL;
-		result = named_config_get(maps, "catalog-zones", &cz);
+		result = named_config_get(maps, CFG_CLAUSE_CATALOG_ZONES, &cz);
 		if (result == ISC_R_SUCCESS) {
 			const cfg_listelt_t *e =
 				cfg_list_first(cfg_tuple_get(cz, "zone list"));
@@ -7171,7 +7221,7 @@ setup_newzones(dns_view_t *view, cfg_obj_t *config, cfg_obj_t *vconfig) {
 		}
 	}
 
-	result = named_config_get(maps, "new-zones-directory", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_NEW_ZONES_DIRECTORY, &obj);
 	if (result == ISC_R_SUCCESS) {
 		dir = cfg_obj_asstring(obj);
 		result = isc_file_isdirectory(dir);
@@ -7200,7 +7250,7 @@ setup_newzones(dns_view_t *view, cfg_obj_t *config, cfg_obj_t *vconfig) {
 	uint64_t mapsize = 0ULL;
 
 	obj = NULL;
-	result = named_config_get(maps, "lmdb-mapsize", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_LMDB_MAPSIZE, &obj);
 	if (result == ISC_R_SUCCESS && obj != NULL) {
 		mapsize = cfg_obj_asuint64(obj);
 		if (mapsize < (1ULL << 20)) { /* 1 megabyte */
@@ -7431,7 +7481,7 @@ for_all_newzone_cfgs(newzone_cfg_cb_t callback, cfg_obj_t *config,
 		 * Extract zone configuration from configuration object.
 		 */
 		zlist = NULL;
-		result = cfg_map_get(zconfigobj, "zone", &zlist);
+		result = cfg_map_get(zconfigobj, CFG_CLAUSE_ZONE, &zlist);
 		if (result != ISC_R_SUCCESS) {
 			break;
 		} else if (!cfg_obj_islist(zlist)) {
@@ -7555,7 +7605,7 @@ create_views(cfg_obj_t *config, dns_viewlist_t *viewlist) {
 
 	APPLY_CONFIGURATION_SUBROUTINE_LOG;
 
-	(void)cfg_map_get(config, "view", &views);
+	(void)cfg_map_get(config, CFG_CLAUSE_VIEW, &views);
 	CFG_LIST_FOREACH(views, element) {
 		cfg_obj_t *vconfig = cfg_listelt_value(element);
 		const char *vname = NULL;
@@ -7628,7 +7678,7 @@ configure_views(cfg_obj_t *config, const cfg_obj_t *bindkeys,
 	 * views that have zones were already created at parsing
 	 * time, but views with no zones must be created here.
 	 */
-	(void)cfg_map_get(config, "view", &views);
+	(void)cfg_map_get(config, CFG_CLAUSE_VIEW, &views);
 	CFG_LIST_FOREACH(views, element) {
 		cfg_obj_t *vconfig = cfg_listelt_value(element);
 		dns_view_t *view = NULL;
@@ -7713,7 +7763,7 @@ configure_keystores(const cfg_obj_t *config, dns_keystorelist_t *keystorelist) {
 	 * Create the DNSSEC key stores.
 	 */
 	keystores = NULL;
-	(void)cfg_map_get(config, "key-store", &keystores);
+	(void)cfg_map_get(config, CFG_CLAUSE_KEY_STORE, &keystores);
 	CFG_LIST_FOREACH(keystores, element) {
 		cfg_obj_t *kconfig = cfg_listelt_value(element);
 
@@ -7739,7 +7789,7 @@ configure_kasplist(const cfg_obj_t *config, dns_kasplist_t *kasplist,
 	/*
 	 * Create the DNSSEC key and signing policies (KASP).
 	 */
-	(void)cfg_map_get(config, "dnssec-policy", &kasps);
+	(void)cfg_map_get(config, CFG_CLAUSE_DNSSEC_POLICY, &kasps);
 	CFG_LIST_FOREACH(kasps, element) {
 		cfg_obj_t *kconfig = cfg_listelt_value(element);
 		dns_kasp_t *kasp = NULL;
@@ -7818,7 +7868,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 */
 	i = 0;
 	options = NULL;
-	result = cfg_map_get(effectiveconfig, "options", &options);
+	result = cfg_map_get(effectiveconfig, CFG_CLAUSE_OPTIONS, &options);
 	if (result == ISC_R_SUCCESS) {
 		maps[i++] = options;
 	}
@@ -7878,22 +7928,23 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 
 #if HAVE_LIBNGHTTP2
 	obj = NULL;
-	result = named_config_get(maps, "http-port", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_HTTP_PORT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	named_g_httpport = (in_port_t)cfg_obj_asuint32(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "https-port", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_HTTPS_PORT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	named_g_httpsport = (in_port_t)cfg_obj_asuint32(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "http-listener-clients", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_HTTP_LISTENER_CLIENTS, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	named_g_http_listener_clients = cfg_obj_asuint32(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "http-streams-per-connection", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_HTTP_STREAMS_PER_CONNECTION,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	named_g_http_streams_per_conn = cfg_obj_asuint32(obj);
 #endif
@@ -7911,7 +7962,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * ACLs that can't work.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "geoip-directory", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_GEOIP_DIRECTORY, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (cfg_obj_isstring(obj)) {
 		char *dir = UNCONST(cfg_obj_asstring(obj));
@@ -7923,13 +7974,15 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	/*
 	 * Configure various server options.
 	 */
-	configure_server_quota(maps, "transfers-out",
+	configure_server_quota(maps, CFG_CLAUSE_TRANSFERS_OUT,
 			       &server->sctx->xfroutquota);
-	configure_server_quota(maps, "tcp-clients", &server->sctx->tcpquota);
-	configure_server_quota(maps, "recursive-clients",
+	configure_server_quota(maps, CFG_CLAUSE_TCP_CLIENTS,
+			       &server->sctx->tcpquota);
+	configure_server_quota(maps, CFG_CLAUSE_RECURSIVE_CLIENTS,
 			       &server->sctx->recursionquota);
-	configure_server_quota(maps, "update-quota", &server->sctx->updquota);
-	configure_server_quota(maps, "sig0checks-quota",
+	configure_server_quota(maps, CFG_CLAUSE_UPDATE_QUOTA,
+			       &server->sctx->updquota);
+	configure_server_quota(maps, CFG_CLAUSE_SIG0CHECKS_QUOTA,
 			       &server->sctx->sig0checksquota);
 
 	max = isc_quota_getmax(&server->sctx->recursionquota);
@@ -7952,7 +8005,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	isc_quota_soft(&server->sctx->recursionquota, softquota);
 
 	obj = NULL;
-	result = named_config_get(maps, "sig0checks-quota-exempt", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SIG0CHECKS_QUOTA_EXEMPT,
+				  &obj);
 	if (result == ISC_R_SUCCESS) {
 		result = cfg_acl_fromconfig(
 			obj, effectiveconfig, aclctx, isc_g_mctx, 0,
@@ -7964,8 +8018,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * Set "blackhole". Only legal at options level; there is
 	 * no default.
 	 */
-	result = configure_view_acl(NULL, effectiveconfig, "blackhole", NULL,
-				    aclctx, isc_g_mctx,
+	result = configure_view_acl(NULL, effectiveconfig, CFG_CLAUSE_BLACKHOLE,
+				    NULL, aclctx, isc_g_mctx,
 				    &server->sctx->blackholeacl);
 	if (result != ISC_R_SUCCESS) {
 		goto cleanup_tls;
@@ -7977,7 +8031,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "match-mapped-addresses", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_MATCH_MAPPED_ADDRESSES,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	env->match_mapped = cfg_obj_asboolean(obj);
 
@@ -7985,7 +8040,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * Configure the network manager
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "tcp-initial-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_INITIAL_TIMEOUT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	initial = cfg_obj_asuint32(obj) * 100;
 	if (initial > MAX_INITIAL_TIMEOUT) {
@@ -8003,7 +8058,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "tcp-idle-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_IDLE_TIMEOUT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	idle = cfg_obj_asuint32(obj) * 100;
 	if (idle > MAX_IDLE_TIMEOUT) {
@@ -8021,7 +8076,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "tcp-keepalive-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_KEEPALIVE_TIMEOUT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	keepalive = cfg_obj_asuint32(obj) * 100;
 	if (keepalive > MAX_KEEPALIVE_TIMEOUT) {
@@ -8039,7 +8094,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "tcp-advertised-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_ADVERTISED_TIMEOUT,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	advertised = cfg_obj_asuint32(obj) * 100;
 	if (advertised > MAX_ADVERTISED_TIMEOUT) {
@@ -8051,7 +8107,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "tcp-primaries-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_PRIMARIES_TIMEOUT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	primaries = cfg_obj_asuint32(obj) * 100;
 	if (primaries > MAX_PRIMARIES_TIMEOUT) {
@@ -8069,7 +8125,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "tcp-reuse-timeout", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_REUSE_TIMEOUT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	reuse = cfg_obj_asuint32(obj) * 100;
 	if (reuse > MAX_REUSE_TIMEOUT) {
@@ -8097,25 +8153,25 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 
 	/* Set the kernel send and receive buffer sizes */
 	obj = NULL;
-	result = named_config_get(maps, "tcp-receive-buffer", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_RECEIVE_BUFFER, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	recv_tcp_buffer_size = cfg_obj_asuint32(obj);
 	CAP_IF_NOT_ZERO(recv_tcp_buffer_size, 4096, INT32_MAX);
 
 	obj = NULL;
-	result = named_config_get(maps, "tcp-send-buffer", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_SEND_BUFFER, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	send_tcp_buffer_size = cfg_obj_asuint32(obj);
 	CAP_IF_NOT_ZERO(send_tcp_buffer_size, 4096, INT32_MAX);
 
 	obj = NULL;
-	result = named_config_get(maps, "udp-receive-buffer", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_UDP_RECEIVE_BUFFER, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	recv_udp_buffer_size = cfg_obj_asuint32(obj);
 	CAP_IF_NOT_ZERO(recv_udp_buffer_size, 4096, INT32_MAX);
 
 	obj = NULL;
-	result = named_config_get(maps, "udp-send-buffer", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_UDP_SEND_BUFFER, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	send_udp_buffer_size = cfg_obj_asuint32(obj);
 	CAP_IF_NOT_ZERO(send_udp_buffer_size, 4096, INT32_MAX);
@@ -8160,13 +8216,13 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * Set the EDNS UDP size when we don't match a view.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "edns-udp-size", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_EDNS_UDP_SIZE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	server->sctx->udpsize = (uint16_t)cfg_obj_asuint32(obj);
 
 	/* Set the transfer message size for TCP */
 	obj = NULL;
-	result = named_config_get(maps, "transfer-message-size", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TRANSFER_MESSAGE_SIZE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	transfer_message_size = cfg_obj_asuint32(obj);
 	if (transfer_message_size < 512) {
@@ -8181,28 +8237,28 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * Configure the zone manager.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "transfers-in", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TRANSFERS_IN, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_zonemgr_settransfersin(server->zonemgr, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "transfers-per-ns", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TRANSFERS_PER_NS, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_zonemgr_settransfersperns(server->zonemgr, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "notify-rate", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_NOTIFY_RATE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_zonemgr_setnotifyrate(server->zonemgr, cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "startup-notify-rate", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STARTUP_NOTIFY_RATE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_zonemgr_setstartupnotifyrate(server->zonemgr,
 					 cfg_obj_asuint32(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "serial-query-rate", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SERIAL_QUERY_RATE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	dns_zonemgr_setserialqueryrate(server->zonemgr, cfg_obj_asuint32(obj));
 
@@ -8212,7 +8268,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	if (named_g_port != 0) {
 		listen_port = named_g_port;
 	} else {
-		result = named_config_getport(effectiveconfig, "port",
+		result = named_config_getport(effectiveconfig, CFG_CLAUSE_PORT,
 					      &listen_port);
 		if (result != ISC_R_SUCCESS) {
 			goto cleanup_portsets;
@@ -8223,7 +8279,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * Find the listen queue depth.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "tcp-listen-queue", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_TCP_LISTEN_QUEUE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	backlog = cfg_obj_asuint32(obj);
 	if ((backlog > 0) && (backlog < 10)) {
@@ -8232,7 +8288,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	ns_interfacemgr_setbacklog(server->interfacemgr, backlog);
 
 	obj = NULL;
-	result = named_config_get(maps, "reuseport", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_REUSEPORT, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	loadbalancesockets = cfg_obj_asboolean(obj);
 #if HAVE_SO_REUSEPORT_LB
@@ -8257,7 +8313,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 		const cfg_obj_t *clistenon = NULL;
 		ns_listenlist_t *listenon = NULL;
 
-		result = named_config_get(maps, "listen-on", &clistenon);
+		result = named_config_get(maps, CFG_CLAUSE_LISTEN_ON,
+					  &clistenon);
 		if (result != ISC_R_SUCCESS) {
 			goto cleanup_portsets;
 		}
@@ -8281,7 +8338,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 		const cfg_obj_t *clistenon = NULL;
 		ns_listenlist_t *listenon = NULL;
 
-		result = named_config_get(maps, "listen-on-v6", &clistenon);
+		result = named_config_get(maps, CFG_CLAUSE_LISTEN_ON_V6,
+					  &clistenon);
 		if (result != ISC_R_SUCCESS) {
 			goto cleanup_portsets;
 		}
@@ -8334,47 +8392,28 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * as specified by the "interface-interval" option.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "interface-interval", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_INTERFACE_INTERVAL, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	interface_interval = cfg_obj_asduration(obj);
-	server->interface_interval = interface_interval;
 
 	/*
 	 * Enable automatic interface scans.
 	 */
 	obj = NULL;
-	result = named_config_get(maps, "automatic-interface-scan", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_AUTOMATIC_INTERFACE_SCAN,
+				  &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	server->sctx->interface_auto = cfg_obj_asboolean(obj);
 
 	if (server->sctx->interface_auto) {
-		if (ns_interfacemgr_dynamic_updates_are_reliable() &&
-		    server->interface_interval != 0)
-		{
-			/*
-			 * In some cases the user might expect a certain
-			 * behaviour from the rescan timer, let's try to deduce
-			 * that from the configuration options.
-			 */
-			isc_log_write(
-				NAMED_LOGCATEGORY_GENERAL,
-				NAMED_LOGMODULE_SERVER, ISC_LOG_INFO,
-				"Disabling periodic interface re-scans timer");
-			server->interface_interval = 0;
-		}
-
 		ns_interfacemgr_routeconnect(server->interfacemgr);
 	} else {
 		ns_interfacemgr_routedisconnect(server->interfacemgr);
 	}
 
-	if (server->interface_interval == 0) {
-		isc_timer_stop(server->interface_timer);
-	} else {
-		isc_interval_set(&interval, interface_interval, 0);
-		isc_timer_start(server->interface_timer, isc_timertype_ticker,
-				&interval);
-	}
+	ns_interfacemgr_routetimer(
+		server->interfacemgr,
+		&(isc_interval_t){ .seconds = interface_interval });
 
 	isc_interval_set(&interval, 1200, 0);
 	isc_timer_start(server->pps_timer, isc_timertype_ticker, &interval);
@@ -8386,7 +8425,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	 * Write the PID file.
 	 */
 	obj = NULL;
-	if (named_config_get(maps, "pid-file", &obj) == ISC_R_SUCCESS) {
+	if (named_config_get(maps, CFG_CLAUSE_PID_FILE, &obj) == ISC_R_SUCCESS)
+	{
 		if (cfg_obj_isvoid(obj)) {
 			named_os_writepidfile(NULL, first_time);
 		} else {
@@ -8486,7 +8526,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 			      "statement for logging due to "
 			      "-g option");
 
-		(void)cfg_map_get(effectiveconfig, "logging", &logobj);
+		(void)cfg_map_get(effectiveconfig, CFG_CLAUSE_LOGGING, &logobj);
 		if (logobj != NULL) {
 			result = named_logconfig(NULL, logobj);
 			if (result != ISC_R_SUCCESS) {
@@ -8505,7 +8545,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 		isc_logconfig_create(&logc);
 
 		logobj = NULL;
-		(void)cfg_map_get(effectiveconfig, "logging", &logobj);
+		(void)cfg_map_get(effectiveconfig, CFG_CLAUSE_LOGGING, &logobj);
 		if (logobj != NULL) {
 			result = named_logconfig(logc, logobj);
 			if (result != ISC_R_SUCCESS) {
@@ -8561,13 +8601,16 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 		const cfg_obj_t *categories = NULL;
 
 		obj = NULL;
-		if (named_config_get(maps, "querylog", &obj) == ISC_R_SUCCESS) {
+		if (named_config_get(maps, CFG_CLAUSE_QUERYLOG, &obj) ==
+		    ISC_R_SUCCESS)
+		{
 			ns_server_setoption(server->sctx, NS_SERVER_LOGQUERIES,
 					    cfg_obj_asboolean(obj));
 		} else {
-			(void)cfg_map_get(effectiveconfig, "logging", &logobj);
+			(void)cfg_map_get(effectiveconfig, CFG_CLAUSE_LOGGING,
+					  &logobj);
 			if (logobj != NULL) {
-				(void)cfg_map_get(logobj, "category",
+				(void)cfg_map_get(logobj, CFG_CLAUSE_CATEGORY,
 						  &categories);
 			}
 			if (categories != NULL) {
@@ -8588,7 +8631,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 			}
 		}
 		obj = NULL;
-		result = named_config_get(maps, "responselog", &obj);
+		result = named_config_get(maps, CFG_CLAUSE_RESPONSELOG, &obj);
 		if (result == ISC_R_SUCCESS) {
 			ns_server_setoption(server->sctx,
 					    NS_SERVER_LOGRESPONSES,
@@ -8597,8 +8640,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	if (options != NULL &&
-	    cfg_map_get(options, "memstatistics", &obj) == ISC_R_SUCCESS)
+	if (options != NULL && cfg_map_get(options, CFG_CLAUSE_MEMSTATISTICS,
+					   &obj) == ISC_R_SUCCESS)
 	{
 		named_g_memstatistics = cfg_obj_asboolean(obj);
 	} else {
@@ -8607,7 +8650,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	if (named_config_get(maps, "memstatistics-file", &obj) == ISC_R_SUCCESS)
+	if (named_config_get(maps, CFG_CLAUSE_MEMSTATISTICS_FILE, &obj) ==
+	    ISC_R_SUCCESS)
 	{
 		named_main_setmemstats(cfg_obj_asstring(obj));
 	} else if (named_g_memstatistics) {
@@ -8617,27 +8661,27 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "statistics-file", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_STATISTICS_FILE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	setstring(server, &server->statsfile, cfg_obj_asstring(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "dump-file", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_DUMP_FILE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	setstring(server, &server->dumpfile, cfg_obj_asstring(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "secroots-file", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SECROOTS_FILE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	setstring(server, &server->secrootsfile, cfg_obj_asstring(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "recursing-file", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_RECURSING_FILE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	setstring(server, &server->recfile, cfg_obj_asstring(obj));
 
 	obj = NULL;
-	result = named_config_get(maps, "version", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_VERSION, &obj);
 	if (result == ISC_R_SUCCESS) {
 		setversionfromobj(server, obj);
 	} else {
@@ -8645,7 +8689,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "hostname", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_HOSTNAME, &obj);
 	if (result == ISC_R_SUCCESS) {
 		sethostnamefromobj(server, obj);
 	} else {
@@ -8653,7 +8697,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "server-id", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_SERVER_ID, &obj);
 	if (result == ISC_R_SUCCESS) {
 		setserveridfromobj(server, obj);
 	} else {
@@ -8661,7 +8705,8 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "flush-zones-on-shutdown", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_FLUSH_ZONES_ON_SHUTDOWN,
+				  &obj);
 	if (result == ISC_R_SUCCESS) {
 		server->flushonshutdown = cfg_obj_asboolean(obj);
 	} else {
@@ -8669,12 +8714,12 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "answer-cookie", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_ANSWER_COOKIE, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	server->sctx->answercookie = cfg_obj_asboolean(obj);
 
 	obj = NULL;
-	result = named_config_get(maps, "cookie-algorithm", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_COOKIE_ALGORITHM, &obj);
 	INSIST(result == ISC_R_SUCCESS);
 	if (strcasecmp(cfg_obj_asstring(obj), "siphash24") == 0) {
 		server->sctx->cookiealg = ns_cookiealg_siphash24;
@@ -8683,7 +8728,7 @@ apply_configuration(cfg_obj_t *effectiveconfig, cfg_obj_t *userconfig,
 	}
 
 	obj = NULL;
-	result = named_config_get(maps, "cookie-secret", &obj);
+	result = named_config_get(maps, CFG_CLAUSE_COOKIE_SECRET, &obj);
 	if (result == ISC_R_SUCCESS) {
 		const char *str;
 		bool first = true;
@@ -8996,6 +9041,9 @@ cleanup:
 	return result;
 }
 
+static isc_result_t
+force_zone_maintenance(dns_zone_t *zone, void *arg);
+
 static void
 destroy_zoneload(zoneload_t *zl) {
 	isc_result_t result;
@@ -9041,8 +9089,10 @@ destroy_zoneload(zoneload_t *zl) {
 	 * so that we know when we need to force AXFR of
 	 * secondary zones whose master files are missing.
 	 */
-	CHECKFATAL(dns_zonemgr_forcemaint(server->zonemgr),
-		   "forcing zone maintenance");
+	CHECKFATAL(
+		named_server_applyzones(server, force_zone_maintenance, NULL),
+		"forcing zone maintenance");
+	dns_zonemgr_resumexfrs(server->zonemgr);
 
 	named_os_started();
 
@@ -9059,6 +9109,100 @@ destroy_zoneload(zoneload_t *zl) {
 
 	isc_log_write(NAMED_LOGCATEGORY_GENERAL, NAMED_LOGMODULE_SERVER,
 		      ISC_LOG_NOTICE, "running");
+}
+
+typedef struct applyzones_arg {
+	dns_view_t *view;
+	dns_zone_t *managed_keys;
+	dns_zone_t *redirect;
+	isc_result_t (*action)(dns_zone_t *, void *);
+	void *arg;
+} applyzones_arg_t;
+
+static isc_result_t
+apply_zone_and_raw(dns_zone_t *zone, applyzones_arg_t *aza) {
+	dns_zone_t *raw = NULL;
+	isc_result_t result = ISC_R_SUCCESS;
+
+	RETERR(aza->action(zone, aza->arg));
+
+	dns_zone_getraw(zone, &raw);
+	if (raw != NULL) {
+		result = aza->action(raw, aza->arg);
+		dns_zone_detach(&raw);
+	}
+	return result;
+}
+
+static isc_result_t
+apply_view_zone(dns_zone_t *zone, void *arg) {
+	applyzones_arg_t *aza = arg;
+
+	/* In-view zones may also be mounted in another view's table. */
+	if (dns_zone_getview(zone) != aza->view || zone == aza->managed_keys ||
+	    zone == aza->redirect)
+	{
+		return ISC_R_SUCCESS;
+	}
+
+	return apply_zone_and_raw(zone, aza);
+}
+
+isc_result_t
+named_server_applyzones(named_server_t *server,
+			isc_result_t (*action)(dns_zone_t *, void *),
+			void *arg) {
+	REQUIRE(NAMED_SERVER_VALID(server));
+	REQUIRE(action != NULL);
+
+	ISC_LIST_FOREACH(server->viewlist, view, link) {
+		applyzones_arg_t aza = {
+			.view = view,
+			.managed_keys = view->managed_keys,
+			.redirect = view->redirect,
+			.action = action,
+			.arg = arg,
+		};
+		RETERR(dns_view_apply(view, true, NULL, apply_view_zone, &aza));
+		if (view->managed_keys != NULL &&
+		    dns_zone_getview(view->managed_keys) == view)
+		{
+			RETERR(apply_zone_and_raw(view->managed_keys, &aza));
+		}
+		if (view->redirect != NULL &&
+		    dns_zone_getview(view->redirect) == view &&
+		    view->redirect != view->managed_keys)
+		{
+			RETERR(apply_zone_and_raw(view->redirect, &aza));
+		}
+	}
+
+	return ISC_R_SUCCESS;
+}
+
+typedef struct zonecounts {
+	unsigned int any;
+	unsigned int xferfirstrefresh;
+	unsigned int soaquery;
+	unsigned int automatic;
+} zonecounts_t;
+
+static isc_result_t
+count_zone_states(dns_zone_t *zone, void *arg) {
+	zonecounts_t *counts = arg;
+
+	counts->any += dns_zone_getcount(zone, DNS_ZONESTATE_ANY);
+	counts->xferfirstrefresh +=
+		dns_zone_getcount(zone, DNS_ZONESTATE_XFERFIRSTREFRESH);
+	counts->soaquery += dns_zone_getcount(zone, DNS_ZONESTATE_SOAQUERY);
+	counts->automatic += dns_zone_getcount(zone, DNS_ZONESTATE_AUTOMATIC);
+	return ISC_R_SUCCESS;
+}
+
+static isc_result_t
+force_zone_maintenance(dns_zone_t *zone, void *arg ISC_ATTR_UNUSED) {
+	dns_zone_forcemaint(zone);
+	return ISC_R_SUCCESS;
 }
 ISC_REFCOUNT_STATIC_IMPL(zoneload, destroy_zoneload);
 
@@ -9140,9 +9284,6 @@ run_server(void *arg) {
 					  named_g_dispatchmgr, geoip,
 					  &server->interfacemgr),
 		   "creating interface manager");
-
-	isc_timer_create(isc_loop_main(), interface_timer_tick, server,
-			 &server->interface_timer);
 
 	isc_timer_create(isc_loop_main(), tat_timer_tick, server,
 			 &server->tat_timer);
@@ -9231,7 +9372,6 @@ shutdown_server(void *arg) {
 		isc_mem_put(server->mctx, nsc, sizeof(*nsc));
 	}
 
-	isc_timer_destroy(&server->interface_timer);
 	isc_timer_destroy(&server->pps_timer);
 	isc_timer_destroy(&server->tat_timer);
 
@@ -9574,7 +9714,8 @@ named_server_destroy(named_server_t **serverp) {
 	clearhostname(server);
 
 	if (server->zonemgr != NULL) {
-		dns_zonemgr_detach(&server->zonemgr);
+		/* All zone activity has drained before server destruction. */
+		dns_zonemgr_destroy(&server->zonemgr);
 	}
 
 	INSIST(ISC_LIST_EMPTY(server->kasplist));
@@ -10325,7 +10466,8 @@ cleanup:
 }
 
 static const cfg_obj_t *
-find_maplist(const cfg_obj_t *config, const char *listname, const char *name) {
+find_maplist(const cfg_obj_t *config, enum cfg_clause listname,
+	     const char *name) {
 	isc_result_t result;
 	const cfg_obj_t *maplist = NULL;
 
@@ -10402,7 +10544,7 @@ listenelt_fromconfig(const cfg_obj_t *listener, const cfg_obj_t *config,
 
 			do_tls = true;
 
-			tlsmap = find_maplist(config, "tls", tlsname);
+			tlsmap = find_maplist(config, CFG_CLAUSE_TLS, tlsname);
 			if (tlsmap == NULL) {
 				cfg_obj_log(tlsobj, ISC_LOG_ERROR,
 					    "tls '%s' is not defined",
@@ -10410,20 +10552,22 @@ listenelt_fromconfig(const cfg_obj_t *listener, const cfg_obj_t *config,
 				return ISC_R_FAILURE;
 			}
 
-			CHECK(cfg_map_get(tlsmap, "key-file", &keyobj));
+			CHECK(cfg_map_get(tlsmap, CFG_CLAUSE_KEY_FILE,
+					  &keyobj));
 			key = cfg_obj_asstring(keyobj);
 
-			CHECK(cfg_map_get(tlsmap, "cert-file", &certobj));
+			CHECK(cfg_map_get(tlsmap, CFG_CLAUSE_CERT_FILE,
+					  &certobj));
 			cert = cfg_obj_asstring(certobj);
 
-			if (cfg_map_get(tlsmap, "ca-file", &ca_obj) ==
+			if (cfg_map_get(tlsmap, CFG_CLAUSE_CA_FILE, &ca_obj) ==
 			    ISC_R_SUCCESS)
 			{
 				ca_file = cfg_obj_asstring(ca_obj);
 			}
 
-			if (cfg_map_get(tlsmap, "protocols", &tls_proto_list) ==
-			    ISC_R_SUCCESS)
+			if (cfg_map_get(tlsmap, CFG_CLAUSE_PROTOCOLS,
+					&tls_proto_list) == ISC_R_SUCCESS)
 			{
 				INSIST(tls_proto_list != NULL);
 				CFG_LIST_FOREACH(tls_proto_list, proto) {
@@ -10442,26 +10586,27 @@ listenelt_fromconfig(const cfg_obj_t *listener, const cfg_obj_t *config,
 				}
 			}
 
-			if (cfg_map_get(tlsmap, "dhparam-file", &dhparam_obj) ==
-			    ISC_R_SUCCESS)
+			if (cfg_map_get(tlsmap, CFG_CLAUSE_DHPARAM_FILE,
+					&dhparam_obj) == ISC_R_SUCCESS)
 			{
 				dhparam_file = cfg_obj_asstring(dhparam_obj);
 			}
 
-			if (cfg_map_get(tlsmap, "ciphers", &ciphers_obj) ==
-			    ISC_R_SUCCESS)
+			if (cfg_map_get(tlsmap, CFG_CLAUSE_CIPHERS,
+					&ciphers_obj) == ISC_R_SUCCESS)
 			{
 				ciphers = cfg_obj_asstring(ciphers_obj);
 			}
 
-			if (cfg_map_get(tlsmap, "cipher-suites",
+			if (cfg_map_get(tlsmap, CFG_CLAUSE_CIPHER_SUITES,
 					&cipher_suites_obj) == ISC_R_SUCCESS)
 			{
 				cipher_suites =
 					cfg_obj_asstring(cipher_suites_obj);
 			}
 
-			if (cfg_map_get(tlsmap, "prefer-server-ciphers",
+			if (cfg_map_get(tlsmap,
+					CFG_CLAUSE_PREFER_SERVER_CIPHERS,
 					&prefer_server_ciphers_obj) ==
 			    ISC_R_SUCCESS)
 			{
@@ -10470,7 +10615,7 @@ listenelt_fromconfig(const cfg_obj_t *listener, const cfg_obj_t *config,
 				tls_prefer_server_ciphers_set = true;
 			}
 
-			if (cfg_map_get(tlsmap, "session-tickets",
+			if (cfg_map_get(tlsmap, CFG_CLAUSE_SESSION_TICKETS,
 					&session_tickets_obj) == ISC_R_SUCCESS)
 			{
 				tls_session_tickets =
@@ -10503,7 +10648,7 @@ listenelt_fromconfig(const cfg_obj_t *listener, const cfg_obj_t *config,
 			return ISC_R_FAILURE;
 		}
 
-		http_server = find_maplist(config, "http", httpname);
+		http_server = find_maplist(config, CFG_CLAUSE_HTTP, httpname);
 		if (http_server == NULL && strcasecmp(httpname, "default") != 0)
 		{
 			cfg_obj_log(httpobj, ISC_LOG_ERROR,
@@ -10522,28 +10667,28 @@ listenelt_fromconfig(const cfg_obj_t *listener, const cfg_obj_t *config,
 				port = named_g_httpsport;
 			} else {
 				RETERR(named_config_getport(
-					config, "https-port", &port));
+					config, CFG_CLAUSE_HTTPS_PORT, &port));
 			}
 		} else if (http && !do_tls) {
 			if (named_g_httpport != 0) {
 				port = named_g_httpport;
 			} else {
-				RETERR(named_config_getport(config, "http-port",
-							    &port));
+				RETERR(named_config_getport(
+					config, CFG_CLAUSE_HTTP_PORT, &port));
 			}
 		} else if (do_tls) {
 			if (named_g_tlsport != 0) {
 				port = named_g_tlsport;
 			} else {
-				RETERR(named_config_getport(config, "tls-port",
-							    &port));
+				RETERR(named_config_getport(
+					config, CFG_CLAUSE_TLS_PORT, &port));
 			}
 		} else {
 			if (named_g_port != 0) {
 				port = named_g_port;
 			} else {
-				RETERR(named_config_getport(config, "port",
-							    &port));
+				RETERR(named_config_getport(
+					config, CFG_CLAUSE_PORT, &port));
 			}
 		}
 	} else {
@@ -10626,19 +10771,21 @@ listenelt_http(const cfg_obj_t *http, const uint16_t family, bool tls,
 		const cfg_obj_t *cfg_max_clients = NULL;
 		const cfg_obj_t *cfg_max_streams = NULL;
 
-		if (cfg_map_get(http, "endpoints", &eplist) == ISC_R_SUCCESS) {
+		if (cfg_map_get(http, CFG_CLAUSE_ENDPOINTS, &eplist) ==
+		    ISC_R_SUCCESS)
+		{
 			INSIST(eplist != NULL);
 			len = cfg_list_length(eplist, false);
 		}
 
-		if (cfg_map_get(http, "listener-clients", &cfg_max_clients) ==
-		    ISC_R_SUCCESS)
+		if (cfg_map_get(http, CFG_CLAUSE_LISTENER_CLIENTS,
+				&cfg_max_clients) == ISC_R_SUCCESS)
 		{
 			INSIST(cfg_max_clients != NULL);
 			max_clients = cfg_obj_asuint32(cfg_max_clients);
 		}
 
-		if (cfg_map_get(http, "streams-per-connection",
+		if (cfg_map_get(http, CFG_CLAUSE_STREAMS_PER_CONNECTION,
 				&cfg_max_streams) == ISC_R_SUCCESS)
 		{
 			INSIST(cfg_max_streams != NULL);
@@ -11192,9 +11339,8 @@ cleanup:
 
 isc_result_t
 named_server_setdebuglevel(named_server_t *server, isc_lex_t *lex) {
+	typeof(named_g_debuglevel) newlevel;
 	char *ptr;
-	char *endp;
-	long newlevel;
 
 	UNUSED(server);
 
@@ -11211,11 +11357,11 @@ named_server_setdebuglevel(named_server_t *server, isc_lex_t *lex) {
 			named_g_debuglevel++;
 		}
 	} else {
-		newlevel = strtol(ptr, &endp, 10);
-		if (*endp != '\0' || newlevel < 0 || newlevel > 99) {
+		RETERR(isc_parse_unsigned_number(&newlevel, ptr, 10));
+		if (newlevel > 99) {
 			return ISC_R_RANGE;
 		}
-		named_g_debuglevel = (unsigned int)newlevel;
+		named_g_debuglevel = newlevel;
 	}
 	isc_log_setdebuglevel(named_g_debuglevel);
 	isc_log_write(NAMED_LOGCATEGORY_GENERAL, NAMED_LOGMODULE_SERVER,
@@ -11626,6 +11772,7 @@ named_server_status(named_server_t *server, isc_buffer_t *text) {
 	char configtime[ISC_FORMATHTTPTIMESTAMP_SIZE];
 	char line[1024], hostname[256];
 	named_reload_t reload_status;
+	zonecounts_t zonecounts = { 0 };
 
 	REQUIRE(text != NULL);
 
@@ -11638,17 +11785,15 @@ named_server_status(named_server_t *server, isc_buffer_t *text) {
 			alt = (char *)named_g_server->version.base;
 		}
 	}
-	zonecount = dns_zonemgr_getcount(server->zonemgr, DNS_ZONESTATE_ANY);
+	CHECK(named_server_applyzones(server, count_zone_states, &zonecounts));
+	zonecount = zonecounts.any;
 	xferrunning = dns_zonemgr_getcount(server->zonemgr,
 					   DNS_ZONESTATE_XFERRUNNING);
 	xferdeferred = dns_zonemgr_getcount(server->zonemgr,
 					    DNS_ZONESTATE_XFERDEFERRED);
-	xferfirstrefresh = dns_zonemgr_getcount(server->zonemgr,
-						DNS_ZONESTATE_XFERFIRSTREFRESH);
-	soaqueries = dns_zonemgr_getcount(server->zonemgr,
-					  DNS_ZONESTATE_SOAQUERY);
-	automatic = dns_zonemgr_getcount(server->zonemgr,
-					 DNS_ZONESTATE_AUTOMATIC);
+	xferfirstrefresh = zonecounts.xferfirstrefresh;
+	soaqueries = zonecounts.soaquery;
+	automatic = zonecounts.automatic;
 
 	isc_time_formathttptimestamp(&named_g_boottime, boottime,
 				     sizeof(boottime));
@@ -12102,7 +12247,7 @@ newzone_parse(named_server_t *server, char *command, dns_view_t **viewp,
 	CHECK(cfg_parse_buffer(&argbuf, bn, 0, &cfg_type_addzoneconf, 0,
 			       &zoneconf));
 
-	CHECK(cfg_map_get(zoneconf, "zone", &zlist));
+	CHECK(cfg_map_get(zoneconf, CFG_CLAUSE_ZONE, &zlist));
 	if (!cfg_obj_islist(zlist)) {
 		CLEANUP(ISC_R_FAILURE);
 	}
@@ -12114,16 +12259,16 @@ newzone_parse(named_server_t *server, char *command, dns_view_t **viewp,
 	zoptions = cfg_tuple_get(zoneobj, "options");
 
 	obj = NULL;
-	(void)cfg_map_get(zoptions, "type", &obj);
+	(void)cfg_map_get(zoptions, CFG_CLAUSE_TYPE, &obj);
 	if (obj == NULL) {
-		(void)cfg_map_get(zoptions, "in-view", &obj);
+		(void)cfg_map_get(zoptions, CFG_CLAUSE_IN_VIEW, &obj);
 		if (obj != NULL) {
 			(void)putstr(text, "'in-view' zones not supported by ");
 			(void)putstr(text, bn);
 			CLEANUP(ISC_R_FAILURE);
 		}
 
-		(void)cfg_map_get(zoptions, "template", &obj);
+		(void)cfg_map_get(zoptions, CFG_CLAUSE_TEMPLATE, &obj);
 		if (obj == NULL) {
 			(void)putstr(text, "no zone type or "
 					   "template specified");
@@ -12194,7 +12339,7 @@ delete_zoneconf(dns_view_t *view, const cfg_obj_t *config,
 	REQUIRE(config != NULL);
 	REQUIRE(zname != NULL);
 
-	cfg_map_get(config, "zone", &zl);
+	cfg_map_get(config, CFG_CLAUSE_ZONE, &zl);
 
 	if (!cfg_obj_islist(zl)) {
 		return ISC_R_FAILURE;
@@ -14364,7 +14509,9 @@ mkey_dumpzone(dns_view_t *view, isc_buffer_t *text) {
 			CHECK(putstr(text, buf));
 
 			revoked = ((kd.flags & DNS_KEYFLAG_REVOKE) != 0);
-			snprintf(buf, sizeof(buf), "\n\tflags:%s%s%s",
+			snprintf(buf, sizeof(buf), "\n\tflags:%s%s%s%s",
+				 ((kd.flags & DNS_KEYFLAG_ADT) != 0) ? " ADT"
+								     : "",
 				 revoked ? " REVOKE" : "",
 				 ((kd.flags & DNS_KEYFLAG_KSK) != 0) ? " SEP"
 								     : "",

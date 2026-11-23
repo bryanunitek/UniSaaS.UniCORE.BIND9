@@ -25,6 +25,7 @@
 #include <isc/types.h>
 
 #include <isccfg/cfg.h>
+#include <isccfg/clause.h>
 #include <isccfg/duration.h>
 
 /*
@@ -87,7 +88,6 @@ enum {
 	CFG_ZONE_MIRROR = 1 << 23,
 };
 
-typedef struct cfg_clausedef	 cfg_clausedef_t;
 typedef struct cfg_tuplefielddef cfg_tuplefielddef_t;
 typedef struct cfg_printer	 cfg_printer_t;
 typedef ISC_LIST(cfg_listelt_t) cfg_list_t;
@@ -138,7 +138,7 @@ typedef void (*cfg_mergefunc_t)(const cfg_obj_t *config,
 				const cfg_obj_t *defaultobj);
 
 struct cfg_clausedef {
-	const char     *name;
+	enum cfg_clause name;
 	cfg_type_t     *type;
 	unsigned int	flags;
 	cfg_mergefunc_t merge;
@@ -228,6 +228,7 @@ struct cfg_obj {
 		uint32_t	   uint32;
 		uint64_t	   uint64;
 		char		  *string; /*%< null terminated */
+		cfg_token_t	  *tokens; /*%< see <isccfg/tokens.h> */
 		bool		   boolean;
 		cfg_map_t	  *map;
 		cfg_list_t	  *list;
@@ -316,6 +317,7 @@ struct cfg_parser {
 extern cfg_rep_t cfg_rep_uint32;
 extern cfg_rep_t cfg_rep_uint64;
 extern cfg_rep_t cfg_rep_string;
+extern cfg_rep_t cfg_rep_tokens;
 extern cfg_rep_t cfg_rep_boolean;
 extern cfg_rep_t cfg_rep_map;
 extern cfg_rep_t cfg_rep_list;
@@ -341,8 +343,8 @@ extern cfg_type_t cfg_type_astring;
 extern cfg_type_t cfg_type_ustring;
 extern cfg_type_t cfg_type_sstring;
 extern cfg_type_t cfg_type_bracketed_aml;
-extern cfg_type_t cfg_type_bracketed_text;
-extern cfg_type_t cfg_type_optional_bracketed_text;
+extern cfg_type_t cfg_type_bracketed_tokens;
+extern cfg_type_t cfg_type_optional_bracketed_tokens;
 extern cfg_type_t cfg_type_keyref;
 extern cfg_type_t cfg_type_sockaddr;
 extern cfg_type_t cfg_type_sockaddrtls;
@@ -475,6 +477,9 @@ cfg_print_bracketed_list(cfg_printer_t *pctx, const cfg_obj_t *obj);
 void
 cfg_doc_bracketed_list(cfg_printer_t *pctx, const cfg_type_t *type);
 
+void
+cfg_doc_enum_list(cfg_printer_t *pctx, const cfg_type_t *type);
+
 isc_result_t
 cfg_parse_spacelist(cfg_parser_t *pctx, const cfg_type_t *type,
 		    cfg_obj_t **ret);
@@ -503,6 +508,16 @@ cfg_print_chars(cfg_printer_t *pctx, const char *text, int len);
 void
 cfg_print_cstr(cfg_printer_t *pctx, const char *s);
 /*%< Print the null-terminated string 's' */
+
+void
+cfg_print_tokens(cfg_printer_t *pctx, const cfg_token_t *tokens,
+		 const cfg_token_t *end, unsigned long line);
+/*%<
+ * Print the token array 'tokens' (see <isccfg/tokens.h>) as a
+ * bracketed block, stopping at 'end' or at the terminating CFG_TOKEN_EOF,
+ * whichever comes first. 'end' may be NULL. 'line' is the source line
+ * of the opening bracket.
+ */
 
 isc_result_t
 cfg_parse_map(cfg_parser_t *pctx, const cfg_type_t *type, cfg_obj_t **ret);
@@ -610,10 +625,15 @@ cfg_is_enum(const char *s, const char *const *enums);
 /*%< Return true iff the string 's' is one of the strings in 'enums' */
 
 bool
-cfg_clause_validforzone(const char *name, unsigned int ztype);
+cfg_clause_validforzone(enum cfg_clause name, unsigned int ztype);
 /*%<
  * Check whether an option is legal for the specified zone type.
  */
+
+bool
+cfg_zoneopts_validforzone(const cfg_obj_t *zoptions, const cfg_obj_t *toptions,
+			  unsigned int ztype);
+/*%< Check whether all zone and template options allow the zone type. */
 
 void
 cfg_print_zonegrammar(const unsigned int zonetype, unsigned int flags,

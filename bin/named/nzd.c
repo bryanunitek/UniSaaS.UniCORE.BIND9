@@ -23,6 +23,7 @@
 #include <dns/zoneproperties.h>
 
 #include <isccfg/cfg.h>
+#include <isccfg/clause.h>
 #include <isccfg/namedconf.h>
 
 #include <named/nzd.h>
@@ -33,8 +34,8 @@ nzd_setkey(MDB_val *key, dns_name_t *name, char *namebuf, size_t buflen) {
 	dns_fixedname_t fixed;
 
 	dns_fixedname_init(&fixed);
-	dns_name_downcase(name, dns_fixedname_name(&fixed));
-	dns_name_format(dns_fixedname_name(&fixed), namebuf, buflen);
+	dns_name_downcase(name, dns_name(&fixed));
+	dns_name_format(&fixed, namebuf, buflen);
 
 	key->mv_data = namebuf;
 	key->mv_size = strlen(namebuf);
@@ -399,7 +400,7 @@ nzd_load_nzf(dns_view_t *view) {
 	}
 
 	zonelist = NULL;
-	CHECK(cfg_map_get(nzf_config, "zone", &zonelist));
+	CHECK(cfg_map_get(nzf_config, CFG_CLAUSE_ZONE, &zonelist));
 	if (!cfg_obj_islist(zonelist)) {
 		CLEANUP(ISC_R_FAILURE);
 	}

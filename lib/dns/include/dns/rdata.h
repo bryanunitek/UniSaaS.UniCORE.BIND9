@@ -143,6 +143,8 @@ enum {
 	DNS_RDATATYPEATTR_ATCNAME = 1 << 10,
 	/*% Follow additional */
 	DNS_RDATATYPEATTR_FOLLOWADDITIONAL = 1 << 11,
+	/*% Delegation type */
+	DNS_RDATATYPEATTR_DELEGATION = 1 << 12,
 };
 
 #define DNS_RDATA_INIT                        \
@@ -643,6 +645,22 @@ dns_rdatatype_atparent(dns_rdatatype_t type) {
 }
 
 /*%
+ * Special case of dns_rdatatype_atparent(), to be used when DELEG might or
+ * might not count as an at-parent type, depending on whether DE=1.
+ *
+ * Requires:
+ * \li	'type' is a valid rdata type.
+ *
+ */
+static inline bool
+dns_rdatatype_atparent_deleg(dns_rdatatype_t type, bool de) {
+	if (type == dns_rdatatype_deleg) {
+		return de;
+	}
+	return dns_rdatatype_atparent(type);
+}
+
+/*%
  * Return true if adding a record of type 'type' to the ADDITIONAL section
  * of a message can itself trigger the addition of still more data to the
  * additional section.
@@ -752,6 +770,20 @@ dns_rdatatype_isalias(dns_rdatatype_t type) {
 }
 
 /*%
+ * Return true iff rdata of type 'type' is a delegating type: either
+ * NS or DELEG.
+ *
+ * Requires:
+ * \li	'type' is a valid rdata type.
+ *
+ */
+static inline bool
+dns_rdatatype_isdelegation(dns_rdatatype_t type) {
+	return (dns_rdatatype_attributes(type) &
+		DNS_RDATATYPEATTR_DELEGATION) != 0;
+}
+
+/*%
  * Return true iff the rdata class 'rdclass' is a meta-class
  * like ANY or NONE.
  */
@@ -834,9 +866,11 @@ dns_rdata_covers(dns_rdata_t *rdata);
  *\li	The type covered.
  */
 
+#define dns_rdata_checkowner(name, rdclass, type, wildcard) \
+	dns__rdata_checkowner(DNS_NAME__RO_ARG(name), rdclass, type, wildcard)
 bool
-dns_rdata_checkowner(const dns_name_t *name, dns_rdataclass_t rdclass,
-		     dns_rdatatype_t type, bool wildcard);
+dns__rdata_checkowner(const dns_name_t *name, dns_rdataclass_t rdclass,
+		      dns_rdatatype_t type, bool wildcard);
 /*
  * Returns whether this is a valid ownername for this <type,class>.
  * If wildcard is true allow the first label to be a wildcard if
@@ -846,9 +880,11 @@ dns_rdata_checkowner(const dns_name_t *name, dns_rdataclass_t rdclass,
  *	'name' is a valid name.
  */
 
+#define dns_rdata_checknames(rdata, owner, bad) \
+	dns__rdata_checknames(rdata, DNS_NAME__RO_ARG(owner), bad)
 bool
-dns_rdata_checknames(dns_rdata_t *rdata, const dns_name_t *owner,
-		     dns_name_t *bad);
+dns__rdata_checknames(dns_rdata_t *rdata, const dns_name_t *owner,
+		      dns_name_t *bad);
 /*
  * Returns whether 'rdata' contains valid domain names.  The checks are
  * sensitive to the owner name.

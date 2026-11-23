@@ -422,7 +422,6 @@ dns_kasp_key_algorithm(dns_kasp_key_t *key) {
 unsigned int
 dns_kasp_key_size(dns_kasp_key_t *key) {
 	unsigned int size = 0;
-	unsigned int min = 0;
 
 	REQUIRE(key != NULL);
 
@@ -433,11 +432,10 @@ dns_kasp_key_size(dns_kasp_key_t *key) {
 	case DST_ALG_RSASHA512:
 	case DST_ALG_RSASHA256PRIVATEOID:
 	case DST_ALG_RSASHA512PRIVATEOID:
-		min = (key->algorithm == DST_ALG_RSASHA512) ? 1024 : 512;
 		if (key->length > -1) {
 			size = (unsigned int)key->length;
-			if (size < min) {
-				size = min;
+			if (size < 1024) {
+				size = 1024;
 			}
 			if (size > 4096) {
 				size = 4096;
@@ -457,6 +455,9 @@ dns_kasp_key_size(dns_kasp_key_t *key) {
 		break;
 	case DST_ALG_ED448:
 		size = 456;
+		break;
+	case DST_ALG_MLDSA44:
+		size = DNS_KEY_MLDSA44SIZE * 8;
 		break;
 	default:
 		/* unsupported */
@@ -494,6 +495,12 @@ dns_kasp_key_zsk(dns_kasp_key_t *key) {
 }
 
 uint16_t
+dns_kasp_key_flags(dns_kasp_key_t *key) {
+	REQUIRE(key != NULL);
+	return key->flags;
+}
+
+uint16_t
 dns_kasp_key_tagmin(dns_kasp_key_t *key) {
 	REQUIRE(key != NULL);
 	return key->tag_min;
@@ -519,6 +526,10 @@ dns_kasp_key_match(dns_kasp_key_t *key, dns_dnsseckey_t *dkey) {
 	}
 	/* Matching length? */
 	if (dst_key_size(dkey->key) != dns_kasp_key_size(key)) {
+		return false;
+	}
+	/* Matching flags? */
+	if (dst_key_flags(dkey->key) != dns_kasp_key_flags(key)) {
 		return false;
 	}
 	/* Matching role? */
@@ -549,7 +560,7 @@ dns_kasp_key_format(dns_kasp_key_t *key, char *cp, unsigned int size) {
 	REQUIRE(key != NULL);
 	REQUIRE(cp != NULL);
 
-	char algstr[DNS_NAME_FORMATSIZE];
+	char algstr[DST_ALG_FORMATSIZE];
 	bool csk = dns_kasp_key_ksk(key) && dns_kasp_key_zsk(key);
 	const char *rolestr = (csk ? "csk"
 				   : (dns_kasp_key_ksk(key) ? "ksk" : "zsk"));

@@ -217,6 +217,9 @@ dst__lib_initialize(void) {
 #ifdef HAVE_OPENSSL_ED448
 	dst__openssleddsa_init(&dst_t_func[DST_ALG_ED448], DST_ALG_ED448);
 #endif /* ifdef HAVE_OPENSSL_ED448 */
+#ifdef HAVE_OPENSSL_MLDSA44
+	dst__opensslmldsa_init(&dst_t_func[DST_ALG_MLDSA44]);
+#endif /* ifdef HAVE_OPENSSL_MLDSA44 */
 
 #if HAVE_GSSAPI
 	dst__gssapi_init(&dst_t_func[DST_ALG_GSSAPI]);
@@ -1291,6 +1294,9 @@ dst_key_sigsize(const dst_key_t *key, unsigned int *n) {
 	case DST_ALG_ED448:
 		*n = DNS_SIG_ED448SIZE;
 		break;
+	case DST_ALG_MLDSA44:
+		*n = DNS_SIG_MLDSA44SIZE;
+		break;
 	case DST_ALG_HMACMD5:
 		*n = ISC_MD5_DIGESTLENGTH;
 		break;
@@ -1331,12 +1337,12 @@ dst_key_setflags(dst_key_t *key, uint32_t flags) {
 void
 dst_key_format(const dst_key_t *key, char *cp, unsigned int size) {
 	char namestr[DNS_NAME_FORMATSIZE];
-	char algstr[DNS_NAME_FORMATSIZE];
+	char algstr[DST_ALG_FORMATSIZE];
 	dst_algorithm_t algorithm = dst_key_alg(key);
 
 	dns_name_format(dst_key_name(key), namestr, sizeof(namestr));
 	dst_algorithm_format(algorithm, algstr, sizeof(algstr));
-	snprintf(cp, size, "%s/%s/%d", namestr, algstr, dst_key_id(key));
+	snprintf(cp, size, "%s/%s/%hu", namestr, algstr, dst_key_id(key));
 }
 
 isc_result_t
@@ -1485,8 +1491,7 @@ dst_key_read_public(const char *filename, int type, isc_mem_t *mctx,
 	dns_fixedname_init(&name);
 	isc_buffer_init(&b, DST_AS_STR(token), strlen(DST_AS_STR(token)));
 	isc_buffer_add(&b, strlen(DST_AS_STR(token)));
-	CHECK(dns_name_fromtext(dns_fixedname_name(&name), &b, dns_rootname,
-				0));
+	CHECK(dns_name_fromtext(dns_name(&name), &b, dns_rootname, 0));
 
 	/* Read the next word: either TTL, class, or 'KEY' */
 	NEXTTOKEN(lex, opt, &token);
@@ -1533,8 +1538,7 @@ dst_key_read_public(const char *filename, int type, isc_mem_t *mctx,
 	CHECK(dns_rdata_fromtext(&rdata, rdclass, keytype, lex, NULL, false,
 				 mctx, &b, NULL));
 
-	CHECK(dst_key_fromdns(dns_fixedname_name(&name), rdclass, &b, mctx,
-			      keyp));
+	CHECK(dst_key_fromdns(dns_name(&name), rdclass, &b, mctx, keyp));
 
 	dst_key_setttl(*keyp, ttl);
 
@@ -1756,6 +1760,7 @@ issymmetric(const dst_key_t *key) {
 	case DST_ALG_ECDSA384:
 	case DST_ALG_ED25519:
 	case DST_ALG_ED448:
+	case DST_ALG_MLDSA44:
 		return false;
 	case DST_ALG_HMACMD5:
 	case DST_ALG_HMACSHA1:
@@ -1881,7 +1886,8 @@ write_key_state(const dst_key_t *key, int type, const char *directory) {
 
 	/* Write key state */
 	if ((type & DST_TYPE_KEY) == 0) {
-		fprintf(fp, "; This is the state of key %d, for ", key->key_id);
+		fprintf(fp, "; This is the state of key %hu, for ",
+			key->key_id);
 		result = dns_name_print(key->key_name, fp);
 		if (result != ISC_R_SUCCESS) {
 			return dst_key_cleanup(tmpname, fp);
@@ -1990,7 +1996,7 @@ write_public_key(const dst_key_t *key, int type, const char *directory) {
 
 	/* Write key information in comments */
 	if ((type & DST_TYPE_KEY) == 0) {
-		fprintf(fp, "; This is a %s%s-signing key, keyid %d, for ",
+		fprintf(fp, "; This is a %s%s-signing key, keyid %hu, for ",
 			(key->key_flags & DNS_KEYFLAG_REVOKE) != 0 ? "revoked "
 								   : "",
 			(key->key_flags & DNS_KEYFLAG_KSK) != 0 ? "key"
@@ -2080,7 +2086,7 @@ buildfilename(dns_name_t *name, dns_keytag_t id, unsigned int alg,
 	isc_buffer_putstr(out, "K");
 	RETERR(dns_name_tofilenametext(name, false, out));
 
-	return isc_buffer_printf(out, "+%03d+%05d%s", alg, id, suffix);
+	return isc_buffer_printf(out, "+%03d+%05hu%s", alg, id, suffix);
 }
 
 static isc_result_t
